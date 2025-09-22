@@ -1,0 +1,45 @@
+# config/entities.yaml
+
+entities:
+  room:
+    type: list
+    values:
+      - кухня: kitchen
+      - спальня: bedroom
+      - гостиная: living_room
+      - ванная: bathroom
+      - коридор: hallway
+      - зал: hall
+
+  app:
+    type: list
+    values:
+      - блокнот: notepad
+      - браузер: browser
+      - калькулятор: calculator
+      - телеграм: telegram
+      - дискорд: discord
+      - спотифай: spotify
+      - хром: chrome
+      - файрфокс: firefox
+
+  time_unit:
+    type: list
+    values:
+      - секунд: seconds
+      - минут: minutes
+      - час: hours
+
+  color:
+    type: list
+    values:
+      - красный: red
+      - синий: blue
+      - зеленый: green
+      - желтый: yellow
+      - белый: white
+
+  number:
+    type: regex
+    pattern: '\d+'
+    transform: int

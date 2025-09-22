@@ -1,0 +1,28 @@
+# requirements.txt
+
+# Core dependencies
+faster-whisper==1.0.0
+numpy==1.24.3
+torch==2.1.0
+torchaudio==2.1.0
+
+# TTS
+silero==0.4.1
+piper-tts==1.2.0
+
+# Audio processing
+sounddevice==0.4.6
+soundfile==0.12.1
+webrtcvad==2.0.10
+
+# Utilities
+pyyaml==6.0.1
+python-dotenv==1.0.0
+click==8.1.7
+
+# Development
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.12.0
+flake8==6.1.0
+mypy==1.7.1

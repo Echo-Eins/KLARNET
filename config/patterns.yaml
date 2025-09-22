@@ -1,0 +1,63 @@
+# config/patterns.yaml
+
+intents:
+  - name: lights_on
+    patterns:
+      - "включи(ть)? свет"
+      - "зажги(ть)? свет"
+      - "свет включи(ть)?"
+      - "включи(ть)? освещение"
+    confidence: 0.9
+    action: smart_home.lights
+    parameters:
+      state: "on"
+
+  - name: lights_off
+    patterns:
+      - "выключи(ть)? свет"
+      - "погаси(ть)? свет"
+      - "свет выключи(ть)?"
+      - "выключи(ть)? освещение"
+    confidence: 0.9
+    action: smart_home.lights
+    parameters:
+      state: "off"
+
+  - name: open_app
+    patterns:
+      - "открой(ть)? {app}"
+      - "запусти(ть)? {app}"
+      - "включи(ть)? {app}"
+    confidence: 0.85
+    action: system.open_app
+    entities:
+      - app
+
+  - name: set_timer
+    patterns:
+      - "поставь таймер на {number} {time_unit}"
+      - "таймер на {number} {time_unit}"
+      - "напомни(ть)? через {number} {time_unit}"
+    confidence: 0.9
+    action: assistant.timer
+    entities:
+      - number
+      - time_unit
+
+  - name: weather
+    patterns:
+      - "какая погода"
+      - "погода (сегодня|завтра|сейчас)"
+      - "будет ли дождь"
+    confidence: 0.85
+    action: assistant.weather
+
+  - name: volume_control
+    patterns:
+      - "громкость {number}"
+      - "сделай (громче|тише)"
+      - "установи громкость на {number}"
+    confidence: 0.9
+    action: system.volume
+    entities:
+      - number

@@ -1,0 +1,67 @@
+# docker-compose.yaml
+
+version: '3.8'
+
+services:
+  klarnet:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: klarnet:latest
+    container_name: klarnet-assistant
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - RUST_LOG=info
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - HASS_TOKEN=${HASS_TOKEN}
+    volumes:
+      - ./config:/app/config:ro
+      - ./models:/app/models:rw
+      - /dev/snd:/dev/snd
+    devices:
+      - /dev/snd:/dev/snd
+    ports:
+      - "3000:3000"  # API
+      - "9090:9090"  # Metrics
+    restart: unless-stopped
+    privileged: true
+    networks:
+      - klarnet-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: klarnet-prometheus
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9091:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - klarnet-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: klarnet-grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+    ports:
+      - "3001:3000"
+    networks:
+      - klarnet-network
+
+networks:
+  klarnet-network:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
