@@ -1,6 +1,9 @@
 // crates/core/src/audio.rs
-use bytes::Bytes;
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Audio configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

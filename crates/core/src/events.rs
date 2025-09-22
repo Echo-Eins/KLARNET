@@ -1,7 +1,7 @@
 // crates/core/src/events.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::time::Duration;
 
 /// VAD events
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,7 +12,7 @@ pub enum VadEvent {
     },
     SpeechFrame {
         timestamp: DateTime<Utc>,
-        pcm: Arc<[f32]>,
+        pcm: Vec<f32>,
         energy: f32,
     },
     SpeechEnd {

@@ -1,104 +1,85 @@
 // src/app.rs
-use klarnet_audio_ingest::AudioIngest;
-use klarnet_vad::{VadProcessor, VadConfig};
-use klarnet_buffering::AudioBuffer;
-use klarnet_whisper_stt::WhisperEngine;
-use klarnet_nlu::NluEngine;
-use klarnet_actions::ActionExecutor;
-use klarnet_tts::TtsEngine;
-use klarnet_api::ApiServer;
-use klarnet_observability::MetricsCollector;
+use std::time::Duration;
 
-pub struct KlarnetApp {
-    config: AppConfig,
-    pipeline: AudioPipeline,
-    api_server: Option<ApiServer>,
-    metrics: Arc<MetricsCollector>,
+use anyhow::Result;
+use klarnet_core::AudioConfig;
+use serde::{Deserialize, Serialize};
+use tokio::signal;
+use tokio::time::timeout;
+use tracing::{error, info};
+
+use crate::pipeline::{AudioPipeline, PipelineConfig};
+
+/// Application level configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    /// Name that will be used in logs and responses.
+    pub assistant_name: String,
+    /// Low level audio configuration shared with the pipeline.
+    pub audio: AudioConfig,
+    /// Configuration for the runtime pipeline.
+    pub pipeline: PipelineConfig,
+    /// Maximum time allowed for graceful shutdown.
+    #[serde(default = "default_shutdown_timeout_ms")]
+    pub shutdown_timeout_ms: u64,
 }
 
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-    pub audio: AudioConfig,
-    pub vad: VadConfig,
-    pub whisper: klarnet_whisper_stt::WhisperConfig,
-    pub nlu: klarnet_nlu::NluConfig,
-    pub api_enabled: bool,
-    pub api_port: u16,
-    pub pre_roll_ms: u64,
+fn default_shutdown_timeout_ms() -> u64 {
+    5_000
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            assistant_name: "KLARNET".to_string(),
             audio: AudioConfig::default(),
-            vad: VadConfig::default(),
-            whisper: klarnet_whisper_stt::WhisperConfig::default(),
-            nlu: klarnet_nlu::NluConfig::default(),
-            api_enabled: true,
-            api_port: 3000,
-            pre_roll_ms: 1000,
+            pipeline: PipelineConfig::default(),
+            shutdown_timeout_ms: default_shutdown_timeout_ms(),
         }
     }
 }
 
+/// Core application orchestrating the pipeline lifecycle.
+pub struct KlarnetApp {
+    config: AppConfig,
+    pipeline: AudioPipeline,
+}
+
 impl KlarnetApp {
-    pub async fn new(config: AppConfig) -> KlarnetResult<Self> {
-        info!("Initializing KLARNET components...");
+    pub fn new(config: AppConfig) -> Result<Self> {
+        let pipeline = AudioPipeline::new(config.pipeline.clone(), config.audio.clone());
 
-        let metrics = Arc::new(MetricsCollector::new());
-
-        let pipeline = AudioPipeline::new(
-            config.clone(),
-            metrics.clone(),
-        ).await?;
-
-        let api_server = if config.api_enabled {
-            Some(ApiServer::new(config.api_port, metrics.clone()).await?)
-        } else {
-            None
-        };
-
-        Ok(Self {
-            config,
-            pipeline,
-            api_server,
-            metrics,
-        })
+        Ok(Self { config, pipeline })
     }
 
-    pub async fn run(&mut self) -> KlarnetResult<()> {
-        info!("Starting KLARNET assistant...");
+    pub async fn run(&mut self) -> Result<()> {
+        info!("Starting assistant '{}'.", self.config.assistant_name);
 
-        // Start API server if enabled
-        if let Some(server) = &self.api_server {
-            tokio::spawn(async move {
-                if let Err(e) = server.serve().await {
-                    error!("API server error: {}", e);
-                }
-            });
-        }
-
-        // Start the audio pipeline
         self.pipeline.start().await?;
 
-        // Wait for shutdown signal
         self.wait_for_shutdown().await?;
 
-        // Cleanup
-        self.pipeline.stop().await?;
-
+        self.shutdown_pipeline().await?;
+        info!("Assistant '{}' stopped.", self.config.assistant_name);
+        Ok(())
+    }
+    async fn wait_for_shutdown(&self) -> Result<()> {
+        info!("Waiting for shutdown signal (Ctrl+C)...");
+        signal::ctrl_c().await?;
+        info!("Shutdown signal received.");
         Ok(())
     }
 
-    async fn wait_for_shutdown(&self) -> KlarnetResult<()> {
-        match signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Received shutdown signal");
-                Ok(())
-            }
-            Err(e) => {
-                error!("Failed to listen for shutdown signal: {}", e);
-                Err(KlarnetError::Unknown(e.to_string()))
+    async fn shutdown_pipeline(&mut self) -> Result<()> {
+        let shutdown_timeout = Duration::from_millis(self.config.shutdown_timeout_ms);
+        info!("Stopping audio pipeline (timeout: {:?})", shutdown_timeout);
+
+        let stop_future = self.pipeline.stop();
+        match timeout(shutdown_timeout, stop_future).await {
+            Ok(result) => result.map_err(|err| err.into()),
+            Err(_) => {
+                error!("Pipeline stop timed out after {:?}", shutdown_timeout);
+                Err(anyhow::anyhow!("graceful shutdown timed out"))
             }
         }
     }
