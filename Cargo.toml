@@ -1,6 +1,11 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/audio_ingest",
+    "crates/vad",
+    "crates/whisper_stt",
+    "crates/nlu",
+    "crates/actions",
 ]
 resolver = "2"
 
@@ -67,7 +72,13 @@ toml.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 klarnet-core = { path = "crates/core" }
+audio_ingest = { path = "crates/audio_ingest", default-features = false }
+vad = { path = "crates/vad" }
+whisper_stt = { path = "crates/whisper_stt" }
+nlu = { path = "crates/nlu" }
+actions = { path = "crates/actions" }
 
 [build-dependencies]
 chrono.workspace = true

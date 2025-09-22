@@ -10,13 +10,13 @@ impl WebRtcVad {
         // Validate configuration
         if ![10, 20, 30].contains(&config.frame_duration_ms) {
             return Err(KlarnetError::Vad(
-                "WebRTC VAD requires frame duration of 10, 20, or 30 ms".to_string()
+                "WebRTC VAD requires frame duration of 10, 20, or 30 ms".to_string(),
             ));
         }
 
         if config.aggressiveness > 3 {
             return Err(KlarnetError::Vad(
-                "WebRTC VAD aggressiveness must be 0-3".to_string()
+                "WebRTC VAD aggressiveness must be 0-3".to_string(),
             ));
         }
 

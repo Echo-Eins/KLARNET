@@ -1,0 +1,12 @@
+
+[package]
+name = "vad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klarnet-core = { path = "../core" }
+tokio.workspace = true
+serde.workspace = true

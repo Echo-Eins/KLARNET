@@ -1,5 +1,15 @@
 // crates/nlu/src/patterns.rs
 
+use async_trait::async_trait;
+use regex::Regex;
+use serde_json::Value;
+use std::collections::HashMap;
+
+use crate::NluProcessor;
+use klarnet_core::{
+    CommandType, Entity, Intent, KlarnetError, KlarnetResult, LocalCommand, NluResult,
+};
+
 pub struct PatternMatcher {
     patterns: Vec<IntentPattern>,
     entities: HashMap<String, EntityExtractor>,
@@ -35,10 +45,7 @@ impl PatternMatcher {
         let patterns = Self::load_patterns(patterns_file)?;
         let entities = Self::create_entity_extractors();
 
-        Ok(Self {
-            patterns,
-            entities,
-        })
+        Ok(Self { patterns, entities })
     }
 
     fn load_patterns(_patterns_file: Option<String>) -> KlarnetResult<Vec<IntentPattern>> {
@@ -100,23 +107,36 @@ impl PatternMatcher {
     fn create_entity_extractors() -> HashMap<String, EntityExtractor> {
         let mut extractors = HashMap::new();
 
-        extractors.insert("room".to_string(), EntityExtractor {
-            name: "room".to_string(),
-            pattern: Regex::new(r"в\s+(кухне|спальне|гостиной|ванной|комнате|зале|коридоре)").unwrap(),
-            entity_type: EntityType::Room,
-        });
+        extractors.insert(
+            "room".to_string(),
+            EntityExtractor {
+                name: "room".to_string(),
+                pattern: Regex::new(r"в\s+(кухне|спальне|гостиной|ванной|комнате|зале|коридоре)")
+                    .unwrap(),
+                entity_type: EntityType::Room,
+            },
+        );
 
-        extractors.insert("number".to_string(), EntityExtractor {
-            name: "number".to_string(),
-            pattern: Regex::new(r"\d+").unwrap(),
-            entity_type: EntityType::Number,
-        });
+        extractors.insert(
+            "number".to_string(),
+            EntityExtractor {
+                name: "number".to_string(),
+                pattern: Regex::new(r"\d+").unwrap(),
+                entity_type: EntityType::Number,
+            },
+        );
 
-        extractors.insert("app_name".to_string(), EntityExtractor {
-            name: "app_name".to_string(),
-            pattern: Regex::new(r"(блокнот|браузер|калькулятор|телеграм|discord|spotify|chrome|firefox)").unwrap(),
-            entity_type: EntityType::Custom("app".to_string()),
-        });
+        extractors.insert(
+            "app_name".to_string(),
+            EntityExtractor {
+                name: "app_name".to_string(),
+                pattern: Regex::new(
+                    r"(блокнот|браузер|калькулятор|телеграм|discord|spotify|chrome|firefox)",
+                )
+                .unwrap(),
+                entity_type: EntityType::Custom("app".to_string()),
+            },
+        );
 
         extractors
     }

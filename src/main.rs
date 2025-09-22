@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
 
     let config = load_config().await?;
 
-    let mut app = KlarnetApp::new(config)?;
+    let mut app = KlarnetApp::new(config).await?;
     app.run().await?;
 
     Ok(())

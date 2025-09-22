@@ -1,0 +1,16 @@
+[package]
+name = "nlu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klarnet-core = { path = "../core" }
+async-trait = "0.1"
+parking_lot = "0.12"
+regex = "1.10"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

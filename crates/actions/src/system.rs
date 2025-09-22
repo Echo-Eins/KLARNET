@@ -1,4 +1,8 @@
-// crates/actions/src/system.rs
+use async_trait::async_trait;
+use std::process::Command as ProcessCommand;
+
+use crate::{ActionHandler, ActionResult, SecurityConfig};
+use klarnet_core::{KlarnetError, KlarnetResult, LocalCommand};
 
 pub struct SystemActions {
     security: SecurityConfig,
@@ -9,13 +13,19 @@ impl SystemActions {
         Ok(Self { security })
     }
 
-    fn execute_system_command(&self, cmd: &str, args: &[&str]) -> KlarnetResult<String> {
+    fn execute_system_command(&self, cmd: &str, args: &[String]) -> KlarnetResult<String> {
         if !self.security.allow_system_commands {
-            return Err(KlarnetError::Action("System commands are disabled".to_string()));
+            return Err(KlarnetError::Action(
+                "System commands are disabled".to_string(),
+            ));
         }
 
-        let output = ProcessCommand::new(cmd)
-            .args(args)
+        let mut command = ProcessCommand::new(cmd);
+        for arg in args {
+            command.arg(arg);
+        }
+
+        let output = command
             .output()
             .map_err(|e| KlarnetError::Action(format!("Failed to execute command: {}", e)))?;
 
@@ -23,7 +33,7 @@ impl SystemActions {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
             Err(KlarnetError::Action(
-                String::from_utf8_lossy(&output.stderr).to_string()
+                String::from_utf8_lossy(&output.stderr).to_string(),
             ))
         }
     }
@@ -38,57 +48,85 @@ impl ActionHandler for SystemActions {
     async fn execute(&self, command: &LocalCommand) -> KlarnetResult<ActionResult> {
         match command.action.as_str() {
             "system.open_app" => {
-                let app_name = command.parameters.get("app_name")
+                let app_name = command
+                    .parameters
+                    .get("app_name")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| KlarnetError::Action("App name not provided".to_string()))?;
 
-                let cmd = if cfg!(target_os = "windows") {
-                    ("cmd", vec!["/c", "start", app_name])
+                let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+                    (
+                        "cmd",
+                        vec!["/c".to_string(), "start".to_string(), app_name.to_string()],
+                    )
                 } else if cfg!(target_os = "macos") {
-                    ("open", vec!["-a", app_name])
+                    ("open", vec!["-a".to_string(), app_name.to_string()])
                 } else {
-                    (app_name, vec![])
+                    (app_name, Vec::new())
                 };
 
-                self.execute_system_command(cmd.0, &cmd.1)?;
-                Ok(ActionResult::success_with_message(
-                    format!("Приложение '{}' запущено", app_name)
-                ))
+                self.execute_system_command(program, &args)?;
+                Ok(ActionResult::success_with_message(format!(
+                    "Приложение '{}' запущено",
+                    app_name
+                )))
             }
 
             "system.volume" => {
-                let level = command.parameters.get("level")
+                let level = command
+                    .parameters
+                    .get("level")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| KlarnetError::Action("Volume level not provided".to_string()))?;
 
-                let cmd = if cfg!(target_os = "windows") {
-                    ("nircmd", vec!["setsysvolume", &(level * 655).to_string()])
+                let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+                    (
+                        "nircmd",
+                        vec!["setsysvolume".to_string(), (level * 655).to_string()],
+                    )
                 } else if cfg!(target_os = "macos") {
-                    ("osascript", vec!["-e", &format!("set volume output volume {}", level)])
+                    (
+                        "osascript",
+                        vec![
+                            "-e".to_string(),
+                            format!("set volume output volume {}", level),
+                        ],
+                    )
                 } else {
-                    ("amixer", vec!["set", "Master", &format!("{}%", level)])
+                    (
+                        "amixer",
+                        vec![
+                            "set".to_string(),
+                            "Master".to_string(),
+                            format!("{}%", level),
+                        ],
+                    )
                 };
 
-                self.execute_system_command(cmd.0, &cmd.1)?;
-                Ok(ActionResult::success_with_message(
-                    format!("Громкость установлена на {}%", level)
-                ))
+                self.execute_system_command(program, &args)?;
+                Ok(ActionResult::success_with_message(format!(
+                    "Громкость установлена на {}%",
+                    level
+                )))
             }
 
             "system.lock" => {
-                let cmd = if cfg!(target_os = "windows") {
-                    ("rundll32", vec!["user32.dll,LockWorkStation"])
+                let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+                    ("rundll32", vec!["user32.dll,LockWorkStation".to_string()])
                 } else if cfg!(target_os = "macos") {
-                    ("pmset", vec!["displaysleepnow"])
+                    ("pmset", vec!["displaysleepnow".to_string()])
                 } else {
-                    ("loginctl", vec!["lock-session"])
+                    ("loginctl", vec!["lock-session".to_string()])
                 };
 
-                self.execute_system_command(cmd.0, &cmd.1)?;
+                self.execute_system_command(program, &args)?;
                 Ok(ActionResult::success())
             }
 
-            _ => Err(KlarnetError::Action(format!("Unknown system action: {}", command.action)))
+            _ => Err(KlarnetError::Action(format!(
+                "Unknown system action: {}",
+                command.action
+            ))),
         }
     }
 
