@@ -1,5 +1,14 @@
 // crates/whisper_stt/src/streaming.rs
-use futures::StreamExt;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use parking_lot::RwLock;
+use uuid::Uuid;
+
+use klarnet_core::{KlarnetResult, Transcript, TranscriptSegment};
+
+use crate::WhisperConfig;
 
 pub struct StreamingWhisper {
     config: WhisperConfig,
@@ -55,7 +64,11 @@ impl StreamingWhisper {
             id: Uuid::new_v4(),
             language: self.config.language.clone(),
             segments: segments.clone(),
-            full_text: segments.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join(" "),
+            full_text: segments
+                .iter()
+                .map(|s| s.text.clone())
+                .collect::<Vec<_>>()
+                .join(" "),
             processing_time: Duration::from_millis(30),
         })
     }

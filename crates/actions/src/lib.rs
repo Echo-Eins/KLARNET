@@ -1,24 +1,23 @@
 // crates/actions/src/lib.rs
 
 use async_trait::async_trait;
-use klarnet_core::{KlarnetError, KlarnetResult, LocalCommand};
+use klarnet_core::{KlarnetResult, LocalCommand};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::process::Command as ProcessCommand;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
-pub mod system;
-pub mod smart_home;
-pub mod web;
 pub mod custom;
+pub mod smart_home;
+pub mod system;
+pub mod web;
 
-use system::SystemActions;
-use smart_home::SmartHomeActions;
-use web::WebActions;
 use custom::CustomActions;
+use smart_home::SmartHomeActions;
+use system::SystemActions;
+use web::WebActions;
 
 /// Action configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +108,7 @@ pub struct ActionExecutor {
     config: ActionsConfig,
     handlers: Vec<Box<dyn ActionHandler>>,
     metrics: Arc<RwLock<ActionMetrics>>,
-    confirmation_pending: Arc<RwLock<HashMap<String, PendingAction>>>,
+    confirmation_pending: Arc<RwLock<HashMap<String, std::time::Instant>>>,
 }
 
 #[derive(Debug, Default)]
@@ -119,13 +118,6 @@ struct ActionMetrics {
     failed: u64,
     blocked: u64,
     average_execution_time_ms: f64,
-}
-
-#[derive(Debug, Clone)]
-struct PendingAction {
-    command: LocalCommand,
-    timestamp: std::time::Instant,
-    attempts: u32,
 }
 
 impl ActionExecutor {
@@ -171,26 +163,42 @@ impl ActionExecutor {
         let start = std::time::Instant::now();
 
         // Check if action is blocked
-        if self.config.security.blocked_commands.contains(&command.action) {
+        if self
+            .config
+            .security
+            .blocked_commands
+            .contains(&command.action)
+        {
             self.metrics.write().blocked += 1;
-            return Ok(ActionResult::failure(
-                format!("Действие '{}' заблокировано", command.action)
-            ));
+            return Ok(ActionResult::failure(format!(
+                "Действие '{}' заблокировано",
+                command.action
+            )));
         }
 
         // Check if confirmation is required
-        if self.config.security.require_confirmation.contains(&command.action) {
+        if self
+            .config
+            .security
+            .require_confirmation
+            .contains(&command.action)
+        {
             if !self.check_confirmation(&command) {
-                return Ok(ActionResult::success_with_message(
-                    format!("Подтвердите выполнение команды '{}'", command.action)
-                ));
+                return Ok(ActionResult::success_with_message(format!(
+                    "Подтвердите выполнение команды '{}'",
+                    command.action
+                )));
             }
         }
 
         // Find handler for the action
         for handler in &self.handlers {
             if handler.can_handle(&command.action).await {
-                info!("Executing action '{}' with handler '{}'", command.action, handler.name());
+                info!(
+                    "Executing action '{}' with handler '{}'",
+                    command.action,
+                    handler.name()
+                );
 
                 let result = match handler.execute(&command).await {
                     Ok(res) => {
@@ -208,26 +216,28 @@ impl ActionExecutor {
                 let execution_time = start.elapsed().as_millis() as f64;
                 let mut metrics = self.metrics.write();
                 metrics.total_executed += 1;
-                metrics.average_execution_time_ms =
-                    (metrics.average_execution_time_ms * (metrics.total_executed - 1) as f64
-                        + execution_time) / metrics.total_executed as f64;
+                metrics.average_execution_time_ms = (metrics.average_execution_time_ms
+                    * (metrics.total_executed - 1) as f64
+                    + execution_time)
+                    / metrics.total_executed as f64;
 
                 return Ok(result);
             }
         }
 
         warn!("No handler found for action: {}", command.action);
-        Ok(ActionResult::failure(
-            format!("Не найден обработчик для команды '{}'", command.action)
-        ))
+        Ok(ActionResult::failure(format!(
+            "Не найден обработчик для команды '{}'",
+            command.action
+        )))
     }
 
     fn check_confirmation(&self, command: &LocalCommand) -> bool {
         let mut pending = self.confirmation_pending.write();
 
         // Check if we have a pending confirmation
-        if let Some(pending_action) = pending.get(&command.action) {
-            if pending_action.timestamp.elapsed() < std::time::Duration::from_secs(30) {
+        if let Some(timestamp) = pending.get(&command.action) {
+            if timestamp.elapsed() < std::time::Duration::from_secs(30) {
                 // Confirmation received within timeout
                 pending.remove(&command.action);
                 return true;
@@ -235,11 +245,7 @@ impl ActionExecutor {
         }
 
         // Add to pending confirmations
-        pending.insert(command.action.clone(), PendingAction {
-            command: command.clone(),
-            timestamp: std::time::Instant::now(),
-            attempts: 0,
-        });
+        pending.insert(command.action.clone(), std::time::Instant::now());
 
         false
     }

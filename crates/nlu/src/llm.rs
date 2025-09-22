@@ -1,8 +1,13 @@
 // crates/nlu/src/llm
 
+use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::json;
 use std::time::Duration;
+
+use crate::{LlmConfig, NluProcessor};
+use klarnet_core::{CommandType, Intent, KlarnetError, KlarnetResult, NluResult};
+use tracing::warn;
 
 pub struct LlmProcessor {
     config: Option<LlmConfig>,
@@ -13,7 +18,9 @@ pub struct LlmProcessor {
 impl LlmProcessor {
     pub async fn new(config: Option<LlmConfig>) -> KlarnetResult<Self> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(config.as_ref().map(|c| c.timeout_s).unwrap_or(5)))
+            .timeout(Duration::from_secs(
+                config.as_ref().map(|c| c.timeout_s).unwrap_or(5),
+            ))
             .build()
             .map_err(|e| KlarnetError::Nlu(e.to_string()))?;
 
@@ -30,7 +37,8 @@ Respond in JSON format:
     "response": "optional response text"
 }
 Common intents: lights_control, open_app, set_timer, weather, music_play, smart_home, system_control
-"#.to_string();
+"#
+        .to_string();
 
         Ok(Self {
             config,
@@ -40,13 +48,16 @@ Common intents: lights_control, open_app, set_timer, weather, music_play, smart_
     }
 
     async fn call_llm(&self, text: &str) -> KlarnetResult<serde_json::Value> {
-        let config = self.config.as_ref()
+        let config = self
+            .config
+            .as_ref()
             .ok_or_else(|| KlarnetError::Nlu("LLM config not provided".to_string()))?;
 
         let api_key = std::env::var(&config.api_key_env)
             .map_err(|_| KlarnetError::Nlu(format!("API key not found: {}", config.api_key_env)))?;
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://openrouter.ai/api/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&json!({
@@ -63,10 +74,15 @@ Common intents: lights_control, open_app, set_timer, weather, music_play, smart_
             .map_err(|e| KlarnetError::Nlu(format!("LLM request failed: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(KlarnetError::Nlu(format!("LLM error: {}", response.status())));
+            return Err(KlarnetError::Nlu(format!(
+                "LLM error: {}",
+                response.status()
+            )));
         }
 
-        let json: serde_json::Value = response.json().await
+        let json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| KlarnetError::Nlu(format!("Failed to parse LLM response: {}", e)))?;
 
         let content = json["choices"][0]["message"]["content"]

@@ -20,9 +20,12 @@ impl EnergyVad {
         }
 
         let mean: f32 = self.energy_history.iter().sum::<f32>() / self.energy_history.len() as f32;
-        let variance: f32 = self.energy_history.iter()
+        let variance: f32 = self
+            .energy_history
+            .iter()
             .map(|e| (e - mean).powi(2))
-            .sum::<f32>() / self.energy_history.len() as f32;
+            .sum::<f32>()
+            / self.energy_history.len() as f32;
         let std_dev = variance.sqrt();
 
         mean + std_dev * 1.5

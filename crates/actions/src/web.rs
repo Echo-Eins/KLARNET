@@ -1,5 +1,11 @@
 // crates/actions/src/web.rs
 
+use async_trait::async_trait;
+use std::process::Command as ProcessCommand;
+
+use crate::{ActionHandler, ActionResult};
+use klarnet_core::{KlarnetError, KlarnetResult, LocalCommand};
+
 pub struct WebActions;
 
 impl WebActions {
@@ -17,12 +23,16 @@ impl ActionHandler for WebActions {
     async fn execute(&self, command: &LocalCommand) -> KlarnetResult<ActionResult> {
         match command.action.as_str() {
             "web.search" => {
-                let query = command.parameters.get("query")
+                let query = command
+                    .parameters
+                    .get("query")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| KlarnetError::Action("Search query not provided".to_string()))?;
 
-                let url = format!("https://www.google.com/search?q={}",
-                                  urlencoding::encode(query));
+                let url = format!(
+                    "https://www.google.com/search?q={}",
+                    urlencoding::encode(query)
+                );
 
                 if cfg!(target_os = "windows") {
                     ProcessCommand::new("cmd")
@@ -41,12 +51,16 @@ impl ActionHandler for WebActions {
                         .map_err(|e| KlarnetError::Action(e.to_string()))?;
                 }
 
-                Ok(ActionResult::success_with_message(
-                    format!("Поиск: {}", query)
-                ))
+                Ok(ActionResult::success_with_message(format!(
+                    "Поиск: {}",
+                    query
+                )))
             }
 
-            _ => Err(KlarnetError::Action(format!("Unknown web action: {}", command.action)))
+            _ => Err(KlarnetError::Action(format!(
+                "Unknown web action: {}",
+                command.action
+            ))),
         }
     }
 

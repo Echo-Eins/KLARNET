@@ -1,5 +1,14 @@
 // crates/whisper_stt/src/processor.rs
-use std::collections::HashMap;
+use std::time::Duration;
+
+use klarnet_core::{KlarnetError, KlarnetResult, Transcript, TranscriptSegment, WordInfo};
+use std::process::Stdio;
+use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
+use tracing::info;
+use uuid::Uuid;
+
+use crate::WhisperConfig;
 
 pub struct WhisperProcessor {
     config: WhisperConfig,
@@ -35,7 +44,8 @@ impl WhisperProcessor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| KlarnetError::Stt(format!("Failed to start Whisper process: {}", e)))?;
 
         self.process = Some(child);
@@ -48,7 +58,8 @@ impl WhisperProcessor {
         // Simplified implementation - in production, use actual faster-whisper
         let segments = self.process_audio(pcm).await?;
 
-        let full_text = segments.iter()
+        let full_text = segments
+            .iter()
             .map(|s| s.text.clone())
             .collect::<Vec<_>>()
             .join(" ");

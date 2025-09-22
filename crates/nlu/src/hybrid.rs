@@ -1,5 +1,11 @@
 // crates/nlu/src/hybrid.rs
 
+use async_trait::async_trait;
+use tracing::debug;
+
+use crate::{LlmProcessor, NluConfig, NluProcessor, PatternMatcher};
+use klarnet_core::{KlarnetResult, NluResult};
+
 pub struct HybridNlu {
     pattern_matcher: PatternMatcher,
     llm_processor: LlmProcessor,
