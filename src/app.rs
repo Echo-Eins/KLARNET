@@ -1,7 +1,7 @@
 // src/app.rs
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use klarnet_core::AudioConfig;
 use serde::{Deserialize, Serialize};
 use tokio::signal;
@@ -14,14 +14,20 @@ use crate::pipeline::{AudioPipeline, PipelineConfig};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Name that will be used in logs and responses.
+    #[serde(default = "default_assistant_name")]
     pub assistant_name: String,
     /// Low level audio configuration shared with the pipeline.
+    #[serde(default)]
     pub audio: AudioConfig,
     /// Configuration for the runtime pipeline.
+    #[serde(default)]
     pub pipeline: PipelineConfig,
     /// Maximum time allowed for graceful shutdown.
     #[serde(default = "default_shutdown_timeout_ms")]
     pub shutdown_timeout_ms: u64,
+}
+fn default_assistant_name() -> String {
+    "KLARNET".to_string()
 }
 
 fn default_shutdown_timeout_ms() -> u64 {
@@ -31,7 +37,7 @@ fn default_shutdown_timeout_ms() -> u64 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            assistant_name: "KLARNET".to_string(),
+            assistant_name: default_assistant_name(),
             audio: AudioConfig::default(),
             pipeline: PipelineConfig::default(),
             shutdown_timeout_ms: default_shutdown_timeout_ms(),
@@ -55,7 +61,7 @@ impl KlarnetApp {
     pub async fn run(&mut self) -> Result<()> {
         info!("Starting assistant '{}'.", self.config.assistant_name);
 
-        self.pipeline.start().await?;
+        self.pipeline.start().await.map_err(|err| anyhow!(err))?;
 
         self.wait_for_shutdown().await?;
 
@@ -76,10 +82,10 @@ impl KlarnetApp {
 
         let stop_future = self.pipeline.stop();
         match timeout(shutdown_timeout, stop_future).await {
-            Ok(result) => result.map_err(|err| err.into()),
+            Ok(result) => result.map_err(|err| anyhow!(err)),Ok(result) => result.map_err(|err| anyhow!(err)),
             Err(_) => {
                 error!("Pipeline stop timed out after {:?}", shutdown_timeout);
-                Err(anyhow::anyhow!("graceful shutdown timed out"))
+                Err(anyhow!("graceful shutdown timed out"))
             }
         }
     }

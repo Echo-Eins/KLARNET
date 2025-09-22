@@ -1,21 +1,17 @@
 // src/main.rs
 
-use anyhow::Result;
-use klarnet_core::{AudioConfig, AudioFrame, KlarnetResult, VadEvent};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::signal;
-use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use tokio::fs;
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app;
-mod pipeline;
 mod commands;
-use std::path::Path;
+mod pipeline;
 
-use app::KlarnetApp;
-use pipeline::AudioPipeline;
+use app::{AppConfig, KlarnetApp};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,7 +36,8 @@ fn init_logging() -> Result<()> {
                 .unwrap_or_else(|_| "klarnet=info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
-        .init();
+        .try_init()
+        .context("failed to initialise tracing subscriber")?;
     Ok(())
 }
 
