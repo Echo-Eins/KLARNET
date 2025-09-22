@@ -50,7 +50,7 @@ impl Default for NluConfig {
     fn default() -> Self {
         Self {
             mode: NluMode::Hybrid,
-            wake_words: vec!["джарвис".to_string(), "ассистент".to_string()],
+            wake_words: vec!["кларнет".to_string(), "ассистент".to_string()],
             confidence_threshold: 0.7,
             patterns_file: Some("config/patterns.yaml".to_string()),
             llm_config: Some(LlmConfig {

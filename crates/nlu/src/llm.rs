@@ -1,4 +1,4 @@
-// crates/nlu/src/llm.rs
+// crates/nlu/src/llm
 
 use reqwest::Client;
 use serde_json::json;

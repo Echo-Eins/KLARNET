@@ -39,7 +39,7 @@ max_segment_length = 30.0
 
 [nlu]
 mode = "hybrid"  # local | llm | hybrid
-wake_words = ["джарвис", "ассистент", "компьютер"]
+wake_words = ["Кларнет", "ассистент", "компьютер"]
 confidence_threshold = 0.7
 
 [nlu.local]

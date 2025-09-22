@@ -28,7 +28,7 @@ pub struct PipelineConfig {
 }
 
 fn default_wake_word() -> String {
-    "джарвис".to_string()
+    "Кларнет".to_string()
 }
 
 fn default_frame_interval_ms() -> u64 {
