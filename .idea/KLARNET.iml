@@ -10,6 +10,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/nlu/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/vad/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/whisper_stt/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/llm_connector/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

@@ -2,16 +2,24 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use klarnet_core::{
     CommandRoute, CommandRouting, CommandType, Entity, Intent, KlarnetError, KlarnetResult,
     LocalCommand, NluResult, Transcript,
 };
+use llm_connector::{
+    CompletionRequest, CompletionResponse, Function as LlmFunction,
+    LlmConfig as ConnectorLlmConfig, LlmConnector, LlmMetricsSnapshot, LlmProviderKind,
+    Message as LlmMessage, Role as LlmRole, Usage,
+};
+
 use regex::{Regex, RegexBuilder};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{Map as JsonMap, Value};
+use serde_json::{json, Map as JsonMap, Value};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, warn};
 
 const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.75;
@@ -58,11 +66,30 @@ pub struct FallbackConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmModeConfig {
+    #[serde(default = "default_llm_provider")]
+    pub provider: String,
     pub api_key_env: String,
     pub model: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default = "default_llm_max_tokens")]
     pub max_tokens: usize,
+    #[serde(default = "default_llm_temperature")]
     pub temperature: f32,
+    #[serde(default = "default_llm_top_p")]
+    pub top_p: f32,
+    #[serde(default = "default_llm_timeout_s")]
     pub timeout_s: u64,
+    #[serde(default = "default_llm_retry_attempts")]
+    pub retry_attempts: u32,
+    #[serde(default = "default_llm_cache_enabled")]
+    pub cache_enabled: bool,
+    #[serde(default = "default_llm_cache_ttl_s")]
+    pub cache_ttl_s: u64,
+    #[serde(default = "default_llm_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
+    #[serde(default = "default_llm_min_request_interval_ms")]
+    pub min_request_interval_ms: u64,
 }
 
 impl Default for NluConfig {
@@ -91,12 +118,49 @@ impl Default for LocalNluConfig {
 impl Default for LlmModeConfig {
     fn default() -> Self {
         Self {
+            provider: default_llm_provider(),
             api_key_env: "OPENROUTER_API_KEY".to_string(),
-            model: "openrouter/auto".to_string(),
-            max_tokens: 256,
-            temperature: 0.3,
-            timeout_s: 10,
+            model: "deepseek/deepseek-chat".to_string(),
+            base_url: None,
+            max_tokens: default_llm_max_tokens(),
+            temperature: default_llm_temperature(),
+            top_p: default_llm_top_p(),
+            timeout_s: default_llm_timeout_s(),
+            retry_attempts: default_llm_retry_attempts(),
+            cache_enabled: default_llm_cache_enabled(),
+            cache_ttl_s: default_llm_cache_ttl_s(),
+            max_concurrent_requests: default_llm_max_concurrent_requests(),
+            min_request_interval_ms: default_llm_min_request_interval_ms(),
         }
+    }
+}
+
+impl LlmModeConfig {
+    fn to_connector_config(&self) -> KlarnetResult<ConnectorLlmConfig> {
+        let provider = match self.provider.to_lowercase().as_str() {
+            "openrouter" => LlmProviderKind::OpenRouter,
+            "deepseek" => LlmProviderKind::DeepSeek,
+            other => {
+                return Err(KlarnetError::Nlu(format!(
+                    "Unsupported LLM provider: {}",
+                    other
+                )))
+            }
+        };
+
+        Ok(ConnectorLlmConfig {
+            provider,
+            model: self.model.clone(),
+            api_key_env: self.api_key_env.clone(),
+            base_url: self.base_url.clone(),
+            max_tokens: self.max_tokens,
+            temperature: self.temperature,
+            top_p: self.top_p,
+            timeout_s: self.timeout_s,
+            retry_attempts: self.retry_attempts,
+            cache_enabled: self.cache_enabled,
+            cache_ttl_s: self.cache_ttl_s,
+        })
     }
 }
 
@@ -108,11 +172,52 @@ fn default_confidence_threshold() -> f32 {
     DEFAULT_CONFIDENCE_THRESHOLD
 }
 
+fn default_llm_provider() -> String {
+    "openrouter".to_string()
+}
+
+fn default_llm_max_tokens() -> usize {
+    500
+}
+
+fn default_llm_temperature() -> f32 {
+    0.3
+}
+
+fn default_llm_top_p() -> f32 {
+    0.95
+}
+
+fn default_llm_timeout_s() -> u64 {
+    10
+}
+
+fn default_llm_retry_attempts() -> u32 {
+    3
+}
+
+fn default_llm_cache_enabled() -> bool {
+    true
+}
+
+fn default_llm_cache_ttl_s() -> u64 {
+    3600
+}
+
+fn default_llm_max_concurrent_requests() -> usize {
+    1
+}
+
+fn default_llm_min_request_interval_ms() -> u64 {
+    0
+}
+
+
 pub struct NluEngine {
     config: NluConfig,
     wake_words_lower: Vec<String>,
     local_matcher: Option<LocalIntentMatcher>,
-    llm_client: Option<LlmClient>,
+    llm_runtime: Option<LlmRuntime>,
     fallback: FallbackConfig,
 }
 
@@ -136,9 +241,24 @@ impl NluEngine {
             .or_else(|| config.local.as_ref().and_then(|c| c.fallback.clone()))
             .unwrap_or_default();
 
-        let llm_client = if matches!(config.mode, NluMode::Llm | NluMode::Hybrid) {
+        let llm_runtime = if matches!(config.mode, NluMode::Llm | NluMode::Hybrid) {
             if let Some(llm_config) = config.llm.clone() {
-                Some(LlmClient::new(llm_config)?)
+                let connector_config = llm_config.to_connector_config()?;
+                let connector = Arc::new(LlmConnector::new(connector_config).await?);
+                let concurrency = llm_config.max_concurrent_requests.max(1);
+                let semaphore = Arc::new(Semaphore::new(concurrency));
+                let min_interval = if llm_config.min_request_interval_ms > 0 {
+                    Some(Duration::from_millis(llm_config.min_request_interval_ms))
+                } else {
+                    None
+                };
+
+                Some(LlmRuntime::new(
+                    connector,
+                    semaphore,
+                    min_interval,
+                    llm_config,
+                ))
             } else {
                 None
             }
@@ -150,9 +270,25 @@ impl NluEngine {
             config,
             wake_words_lower,
             local_matcher,
-            llm_client,
+            llm_runtime,
             fallback,
         })
+    }
+    pub async fn take_last_llm_usage(&self) -> Option<LlmUsageRecord> {
+        match &self.llm_runtime {
+            Some(runtime) => runtime.take_usage().await,
+            None => None,
+        }
+    }
+
+    pub fn llm_metrics_snapshot(&self) -> Option<LlmMetricsSnapshot> {
+        self.llm_runtime
+            .as_ref()
+            .map(|runtime| runtime.metrics_snapshot())
+    }
+
+    pub fn llm_configuration(&self) -> Option<LlmConfigurationSummary> {
+        self.llm_runtime.as_ref().map(|runtime| runtime.summary())
     }
 
     pub async fn process(&self, transcript: &Transcript) -> KlarnetResult<NluResult> {
@@ -250,16 +386,41 @@ impl NluEngine {
             return Ok(self.fallback_result(transcript, true, normalized_command, "empty_command"));
         }
 
-        if let Some(interp) = self.invoke_llm(original_command).await? {
-            return Ok(self.build_llm_result(transcript, wake_word_detected, interp));
+        match self
+            .invoke_llm(transcript, normalized_command, original_command)
+            .await
+        {
+            Ok(Some(interp)) => {
+                return Ok(self.build_llm_result(transcript, wake_word_detected, interp));
+            }
+            Ok(None) => {
+                warn!("LLM returned no actionable interpretation");
+                return Ok(self.fallback_result(
+                    transcript,
+                    wake_word_detected,
+                    original_command,
+                    "llm_invalid_response",
+                ));
+            }
+            Err(KlarnetError::Network(err)) => {
+                warn!("LLM network error: {}", err);
+                return Ok(self.fallback_result(
+                    transcript,
+                    wake_word_detected,
+                    original_command,
+                    "llm_network_error",
+                ));
+            }
+            Err(err) => {
+                warn!("LLM invocation failed: {}", err);
+                return Ok(self.fallback_result(
+                    transcript,
+                    wake_word_detected,
+                    original_command,
+                    "llm_error",
+                ));
+            }
         }
-
-        Ok(self.fallback_result(
-            transcript,
-            wake_word_detected,
-            original_command,
-            "llm_unavailable",
-        ))
     }
 
     async fn process_hybrid(
@@ -291,9 +452,27 @@ impl NluEngine {
             }
         }
 
-        if let Some(interp) = self.invoke_llm(original_command).await? {
-            debug!("Using LLM interpretation for command");
-            return Ok(self.build_llm_result(transcript, wake_word_detected, interp));
+        match self
+            .invoke_llm(transcript, normalized_command, original_command)
+            .await
+        {
+            Ok(Some(interp)) => {
+                debug!("Using LLM interpretation for command");
+                return Ok(self.build_llm_result(transcript, wake_word_detected, interp));
+            }
+            Ok(None) => {}
+            Err(KlarnetError::Network(err)) => {
+                warn!("LLM network error: {}", err);
+                return Ok(self.fallback_result(
+                    transcript,
+                    wake_word_detected,
+                    original_command,
+                    "llm_network_error",
+                ));
+            }
+            Err(err) => {
+                warn!("LLM invocation failed: {}", err);
+            }
         }
 
         if let Some(outcome) = low_confidence_match {
@@ -359,6 +538,31 @@ impl NluEngine {
             "transcript".to_string(),
             Value::String(transcript.full_text.clone()),
         );
+
+        if let Some(response) = interpretation.response_text.as_ref() {
+            parameters
+                .entry("llm_response".to_string())
+                .or_insert_with(|| Value::String(response.clone()));
+        }
+
+        if let Some(function) = interpretation.function_name.as_ref() {
+            parameters
+                .entry("llm_function".to_string())
+                .or_insert_with(|| Value::String(function.clone()));
+        }
+
+        let usage = &interpretation.usage;
+        parameters
+            .entry("llm_prompt_tokens".to_string())
+            .or_insert_with(|| Value::Number(serde_json::Number::from(usage.prompt_tokens as u64)));
+        parameters
+            .entry("llm_completion_tokens".to_string())
+            .or_insert_with(|| {
+                Value::Number(serde_json::Number::from(usage.completion_tokens as u64))
+            });
+        parameters
+            .entry("llm_total_tokens".to_string())
+            .or_insert_with(|| Value::Number(serde_json::Number::from(usage.total_tokens as u64)));
 
         let command_type = if let Some(action) = &interpretation.action {
             CommandType::LlmRequired(action.clone())
@@ -454,18 +658,330 @@ impl NluEngine {
         (false, trimmed_lower, trimmed_original.to_string(), offset)
     }
 
-    async fn invoke_llm(&self, text: &str) -> KlarnetResult<Option<LlmInterpretation>> {
-        if let Some(client) = &self.llm_client {
-            match client.interpret(text).await {
-                Ok(result) => Ok(Some(result)),
-                Err(err) => {
-                    warn!("LLM interpretation failed: {}", err);
+    async fn invoke_llm(
+        &self,
+        transcript: &Transcript,
+        normalized_command: &str,
+        original_command: &str,
+    ) -> KlarnetResult<Option<LlmInterpretation>> {
+        let runtime = match &self.llm_runtime {
+            Some(runtime) => runtime,
+            None => return Ok(None),
+        };
+
+        let _permit = runtime.acquire().await;
+
+        let request = self.build_llm_request(transcript, normalized_command, original_command);
+        let start = Instant::now();
+        let response = runtime.connector.complete(request).await?;
+        let latency = start.elapsed();
+
+        runtime.record_usage(response.usage.clone(), latency).await;
+
+        match self.parse_llm_response(response)? {
+            Some(mut interpretation) => {
+                if self.validate_llm_interpretation(&mut interpretation) {
+                    Ok(Some(interpretation))
+                } else {
+                    warn!("LLM interpretation rejected by validator");
                     Ok(None)
                 }
             }
-        } else {
-            Ok(None)
+            None => Ok(None),
         }
+    }
+    fn build_llm_request(
+        &self,
+        transcript: &Transcript,
+        normalized_command: &str,
+        original_command: &str,
+    ) -> CompletionRequest {
+        let llm_config = self
+            .config
+            .llm
+            .as_ref()
+            .expect("LLM configuration missing for enabled mode");
+
+        let system_prompt = format!(
+            "You are KLARNET's NLU module. Extract intents, actions, routes and structured parameters. \
+            Use function calls when appropriate. Known wake words: {}. Return Russian text when needed.",
+            self.config.wake_words.join(", ")
+        );
+
+        let context = format!(
+            "Original transcript: {original}\nNormalised: {normalized}\nLanguage: {language}",
+            original = original_command.trim(),
+            normalized = normalized_command.trim(),
+            language = transcript.language,
+        );
+
+        CompletionRequest {
+            messages: vec![
+                LlmMessage {
+                    role: LlmRole::System,
+                    content: system_prompt,
+                },
+                LlmMessage {
+                    role: LlmRole::User,
+                    content: context,
+                },
+            ],
+            max_tokens: Some(llm_config.max_tokens),
+            temperature: Some(llm_config.temperature),
+            top_p: Some(llm_config.top_p),
+            stop: None,
+            functions: Some(self.llm_functions()),
+        }
+    }
+
+    fn llm_functions(&self) -> Vec<LlmFunction> {
+        vec![
+            LlmFunction {
+                name: "execute_command".to_string(),
+                description: "Execute a system, device or smart home action".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "intent": {"type": "string"},
+                        "action": {"type": "string"},
+                        "route": {"type": "string"},
+                        "parameters": {"type": "object"},
+                        "entities": {"type": "object"},
+                        "response": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+                    },
+                    "required": ["action"]
+                }),
+            },
+            LlmFunction {
+                name: "answer_question".to_string(),
+                description: "Provide an answer when no actionable command is required".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "intent": {"type": "string"},
+                        "answer": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+                    },
+                    "required": ["answer"]
+                }),
+            },
+        ]
+    }
+
+    fn parse_llm_response(
+        &self,
+        response: CompletionResponse,
+    ) -> KlarnetResult<Option<LlmInterpretation>> {
+        if let Some(function_call) = response.function_call.clone() {
+            let args: Value = match serde_json::from_str(&function_call.arguments) {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("Failed to parse LLM function arguments: {}", err);
+                    return Ok(None);
+                }
+            };
+
+            return Ok(self.parse_function_call(function_call.name, args, response));
+        }
+
+        if response.content.trim().is_empty() {
+            return Ok(None);
+        }
+
+        match serde_json::from_str::<Value>(&response.content) {
+            Ok(json) => Ok(self.parse_structured_content(json, response.usage)),
+            Err(_) => Ok(Some(LlmInterpretation {
+                intent_name: Some("chat".to_string()),
+                confidence: 0.5,
+                parameters: JsonMap::new(),
+                entities: Vec::new(),
+                action: None,
+                route: None,
+                response_text: Some(response.content),
+                function_name: None,
+                usage: response.usage,
+            })),
+        }
+    }
+
+    fn parse_function_call(
+        &self,
+        name: String,
+        args: Value,
+        response: CompletionResponse,
+    ) -> Option<LlmInterpretation> {
+        match name.as_str() {
+            "execute_command" => {
+                let action = args
+                    .get("action")
+                    .and_then(Value::as_str)?
+                    .trim()
+                    .to_string();
+                if action.is_empty() {
+                    return None;
+                }
+
+                let mut parameters = args
+                    .get("parameters")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_else(JsonMap::new);
+                let entities = self.extract_entities(&mut parameters, args.get("entities"));
+                let intent_name = args
+                    .get("intent")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string())
+                    .or_else(|| Some(action.clone()));
+
+                Some(LlmInterpretation {
+                    intent_name,
+                    confidence: args
+                        .get("confidence")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.8) as f32,
+                    parameters,
+                    entities,
+                    action: Some(action),
+                    route: args
+                        .get("route")
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string()),
+                    response_text: args
+                        .get("response")
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            if response.content.trim().is_empty() {
+                                None
+                            } else {
+                                Some(response.content.clone())
+                            }
+                        }),
+                    function_name: Some(name),
+                    usage: response.usage,
+                })
+            }
+            "answer_question" => Some(LlmInterpretation {
+                intent_name: args
+                    .get("intent")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string())
+                    .or_else(|| Some("chat".to_string())),
+                confidence: args
+                    .get("confidence")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.6) as f32,
+                parameters: JsonMap::new(),
+                entities: Vec::new(),
+                action: None,
+                route: None,
+                response_text: args
+                    .get("answer")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string())
+                    .or_else(|| Some(response.content)),
+                function_name: Some(name),
+                usage: response.usage,
+            }),
+            _ => None,
+        }
+    }
+
+    fn parse_structured_content(&self, json: Value, usage: Usage) -> Option<LlmInterpretation> {
+        let mut parameters = json
+            .get("parameters")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_else(JsonMap::new);
+
+        let entities = self.extract_entities(&mut parameters, json.get("entities"));
+
+        Some(LlmInterpretation {
+            intent_name: json
+                .get("intent")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string()),
+            confidence: json
+                .get("confidence")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.5) as f32,
+            parameters,
+            entities,
+            action: json
+                .get("action")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string()),
+            route: json
+                .get("route")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    json.get("routing")
+                        .and_then(|r| r.get("target"))
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string())
+                }),
+            response_text: json
+                .get("response")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string()),
+            function_name: None,
+            usage,
+        })
+    }
+
+    fn extract_entities(
+        &self,
+        parameters: &mut JsonMap<String, Value>,
+        explicit: Option<&Value>,
+    ) -> Vec<Entity> {
+        let mut entities = Vec::new();
+
+        if let Some(value) = parameters.remove("entities") {
+            if let Value::Object(map) = value {
+                for (name, value) in map {
+                    entities.push(Entity {
+                        name,
+                        value,
+                        start: 0,
+                        end: 0,
+                    });
+                }
+            }
+        }
+
+        if let Some(Value::Object(map)) = explicit {
+            for (name, value) in map.clone() {
+                entities.push(Entity {
+                    name,
+                    value,
+                    start: 0,
+                    end: 0,
+                });
+            }
+        }
+
+        entities
+    }
+
+    fn validate_llm_interpretation(&self, interpretation: &mut LlmInterpretation) -> bool {
+        if interpretation.confidence.is_nan() {
+            interpretation.confidence = 0.0;
+        }
+        interpretation.confidence = interpretation.confidence.clamp(0.0, 1.0);
+
+        if let Some(action) = &interpretation.action {
+            if action.trim().is_empty() {
+                interpretation.action = None;
+            }
+        }
+
+        if interpretation.action.is_some() && interpretation.intent_name.is_none() {
+            interpretation.intent_name = interpretation.action.clone();
+        }
+
+        true
     }
 }
 
@@ -484,6 +1000,109 @@ fn char_offset(text: &str, chars: usize) -> usize {
         Some((idx, _)) => idx,
         None => text.len(),
     }
+}
+
+struct LlmRuntime {
+    connector: Arc<LlmConnector>,
+    semaphore: Arc<Semaphore>,
+    min_interval: Option<Duration>,
+    last_call: AsyncMutex<Option<Instant>>,
+    last_usage: AsyncMutex<Option<LlmUsageRecord>>,
+    config: LlmModeConfig,
+}
+
+impl LlmRuntime {
+    fn new(
+        connector: Arc<LlmConnector>,
+        semaphore: Arc<Semaphore>,
+        min_interval: Option<Duration>,
+        config: LlmModeConfig,
+    ) -> Self {
+        Self {
+            connector,
+            semaphore,
+            min_interval,
+            last_call: AsyncMutex::new(None),
+            last_usage: AsyncMutex::new(None),
+            config,
+        }
+    }
+
+    async fn acquire(&self) -> OwnedSemaphorePermit {
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("LLM semaphore closed");
+
+        if let Some(interval) = self.min_interval {
+            let mut last_call = self.last_call.lock().await;
+            if let Some(last) = *last_call {
+                let elapsed = last.elapsed();
+                if elapsed < interval {
+                    tokio::time::sleep(interval - elapsed).await;
+                }
+            }
+            *last_call = Some(Instant::now());
+        }
+
+        permit
+    }
+
+    async fn record_usage(&self, usage: Usage, latency: Duration) {
+        let config = self.connector.config();
+        let provider = match &config.provider {
+            LlmProviderKind::OpenRouter => "openrouter".to_string(),
+            LlmProviderKind::DeepSeek => "deepseek".to_string(),
+            LlmProviderKind::OpenAI => "openai".to_string(),
+            LlmProviderKind::Custom(name) => name.clone(),
+        };
+
+        let mut guard = self.last_usage.lock().await;
+        *guard = Some(LlmUsageRecord {
+            usage,
+            latency,
+            provider,
+            model: config.model.clone(),
+        });
+    }
+
+    async fn take_usage(&self) -> Option<LlmUsageRecord> {
+        let mut guard = self.last_usage.lock().await;
+        guard.take()
+    }
+
+    fn metrics_snapshot(&self) -> LlmMetricsSnapshot {
+        self.connector.metrics_snapshot()
+    }
+
+    fn summary(&self) -> LlmConfigurationSummary {
+        LlmConfigurationSummary {
+            provider: self.config.provider.clone(),
+            model: self.config.model.clone(),
+            cache_enabled: self.config.cache_enabled,
+            max_concurrent_requests: self.config.max_concurrent_requests,
+            min_request_interval_ms: self.config.min_request_interval_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmUsageRecord {
+    pub usage: Usage,
+    pub latency: Duration,
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmConfigurationSummary {
+    pub provider: String,
+    pub model: String,
+    pub cache_enabled: bool,
+    pub max_concurrent_requests: usize,
+    pub min_request_interval_ms: u64,
 }
 
 #[derive(Debug)]
@@ -877,146 +1496,6 @@ fn load_config<T: DeserializeOwned>(path: &Path) -> KlarnetResult<T> {
     }
 }
 
-struct LlmClient {
-    client: reqwest::Client,
-    config: LlmModeConfig,
-    system_prompt: String,
-}
-
-impl LlmClient {
-    fn new(config: LlmModeConfig) -> KlarnetResult<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_s))
-            .build()
-            .map_err(|e| KlarnetError::Nlu(format!("Failed to build HTTP client: {}", e)))?;
-
-        let system_prompt = r#"You are a Russian voice assistant NLU module.
-Return a JSON object with fields: intent (string), confidence (0..1), parameters (object),
-entities (object mapping names to canonical values), action (string, optional), route (string, optional)."#
-            .to_string();
-
-        Ok(Self {
-            client,
-            config,
-            system_prompt,
-        })
-    }
-
-    async fn interpret(&self, text: &str) -> KlarnetResult<LlmInterpretation> {
-        let response = self.call_llm(text).await?;
-        self.parse_response(text, response)
-    }
-
-    async fn call_llm(&self, text: &str) -> KlarnetResult<Value> {
-        let api_key = std::env::var(&self.config.api_key_env).map_err(|_| {
-            KlarnetError::Nlu(format!(
-                "API key not found for env var {}",
-                self.config.api_key_env
-            ))
-        })?;
-
-        let payload = serde_json::json!({
-            "model": self.config.model,
-            "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": text}
-            ],
-            "max_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature,
-        });
-
-        let response = self
-            .client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| KlarnetError::Network(format!("LLM request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(KlarnetError::Network(format!(
-                "LLM responded with status {}",
-                response.status()
-            )));
-        }
-
-        response
-            .json()
-            .await
-            .map_err(|e| KlarnetError::Nlu(format!("Failed to parse LLM response: {}", e)))
-    }
-
-    fn parse_response(&self, _text: &str, payload: Value) -> KlarnetResult<LlmInterpretation> {
-        let content = payload
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| KlarnetError::Nlu("Invalid LLM response format".to_string()))?;
-
-        let parsed: Value = serde_json::from_str(content)
-            .map_err(|e| KlarnetError::Nlu(format!("Failed to parse LLM JSON payload: {}", e)))?;
-
-        let parameters = parsed
-            .get("parameters")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_else(JsonMap::new);
-
-        let entities_value = parsed
-            .get("entities")
-            .cloned()
-            .unwrap_or_else(|| Value::Object(JsonMap::new()));
-
-        let mut entities = Vec::new();
-        if let Value::Object(map) = entities_value {
-            for (name, value) in map {
-                entities.push(Entity {
-                    name,
-                    value,
-                    start: 0,
-                    end: 0,
-                });
-            }
-        }
-
-        let intent_name = parsed
-            .get("intent")
-            .and_then(Value::as_str)
-            .map(|s| s.to_string());
-
-        let confidence = parsed
-            .get("confidence")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.5) as f32;
-
-        let action = parsed
-            .get("action")
-            .and_then(Value::as_str)
-            .map(|s| s.to_string());
-
-        let route = parsed
-            .get("route")
-            .and_then(Value::as_str)
-            .map(|s| s.to_string())
-            .or_else(|| {
-                parsed
-                    .get("routing")
-                    .and_then(|v| v.get("target"))
-                    .and_then(Value::as_str)
-                    .map(|s| s.to_string())
-            });
-
-        Ok(LlmInterpretation {
-            intent_name,
-            confidence,
-            parameters,
-            entities,
-            action,
-            route,
-        })
-    }
-}
-
 struct LlmInterpretation {
     intent_name: Option<String>,
     confidence: f32,
@@ -1024,6 +1503,9 @@ struct LlmInterpretation {
     entities: Vec<Entity>,
     action: Option<String>,
     route: Option<String>,
+    response_text: Option<String>,
+    function_name: Option<String>,
+    usage: Usage,
 }
 
 #[cfg(test)]

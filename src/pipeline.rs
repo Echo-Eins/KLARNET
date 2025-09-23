@@ -512,6 +512,17 @@ impl PipelineComponents {
             .await
             .map_err(|err| format!("nlu init failed: {err}"))?;
 
+        if let Some(summary) = nlu_engine.llm_configuration() {
+            info!(
+                provider = %summary.provider,
+                model = %summary.model,
+                cache_enabled = summary.cache_enabled,
+                max_concurrent_requests = summary.max_concurrent_requests,
+                min_request_interval_ms = summary.min_request_interval_ms,
+                "Configured NLU LLM backend",
+            );
+        }
+
         let collector = SegmentCollector::new(
             audio_config.sample_rate,
             config.pre_roll_ms,
@@ -713,6 +724,31 @@ async fn dispatch_nlu(
                     guard.commands += 1;
                 }
                 guard.last_activity = Some(Instant::now());
+            }
+
+            if let Some(usage) = nlu_engine.take_last_llm_usage().await {
+                info!(
+                    provider = %usage.provider,
+                    model = %usage.model,
+                    prompt_tokens = usage.usage.prompt_tokens,
+                    completion_tokens = usage.usage.completion_tokens,
+                    total_tokens = usage.usage.total_tokens,
+                    latency_ms = usage.latency.as_millis() as u64,
+                    "LLM usage recorded",
+                );
+
+                if let Some(snapshot) = nlu_engine.llm_metrics_snapshot() {
+                    debug!(
+                        provider = %snapshot.provider,
+                        total_requests = snapshot.total_requests,
+                        successful_requests = snapshot.successful_requests,
+                        failed_requests = snapshot.failed_requests,
+                        cache_hits = snapshot.cache_hits,
+                        total_tokens = snapshot.total_tokens_used,
+                        avg_latency_ms = snapshot.average_response_time_ms,
+                        "LLM metrics snapshot",
+                    );
+                }
             }
 
             if let Err(err) = nlu_tx.send(result) {

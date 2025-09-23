@@ -1,27 +1,30 @@
 // crates/llm_connector/src/lib.rs
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use klarnet_core::{KlarnetError, KlarnetResult};
 use parking_lot::RwLock;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
-use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::warn;
 
-pub mod openrouter;
-pub mod deepseek;
 pub mod cache;
+pub mod deepseek;
+pub mod openrouter;
 pub mod prompt_builder;
 
 use cache::LlmCache;
+use deepseek::DeepSeekProvider;
+use openrouter::OpenRouterProvider;
 use prompt_builder::PromptBuilder;
 
 /// LLM configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    pub provider: LlmProvider,
+    pub provider: LlmProviderKind,
     pub model: String,
     pub api_key_env: String,
     pub base_url: Option<String>,
@@ -35,7 +38,7 @@ pub struct LlmConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum LlmProvider {
+pub enum LlmProviderKind {
     OpenRouter,
     DeepSeek,
     OpenAI,
@@ -45,7 +48,7 @@ pub enum LlmProvider {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            provider: LlmProvider::OpenRouter,
+            provider: LlmProviderKind::OpenRouter,
             model: "deepseek/deepseek-chat".to_string(),
             api_key_env: "OPENROUTER_API_KEY".to_string(),
             base_url: None,
@@ -114,7 +117,7 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
@@ -130,6 +133,17 @@ pub struct LlmConnector {
     metrics: Arc<RwLock<LlmMetrics>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LlmMetricsSnapshot {
+    pub provider: String,
+    pub total_requests: u64,
+    pub successful_requests: u64,
+    pub failed_requests: u64,
+    pub cache_hits: u64,
+    pub total_tokens_used: usize,
+    pub average_response_time_ms: f64,
+}
+
 #[derive(Debug, Default)]
 struct LlmMetrics {
     total_requests: u64,
@@ -143,14 +157,10 @@ struct LlmMetrics {
 impl LlmConnector {
     pub async fn new(config: LlmConfig) -> KlarnetResult<Self> {
         let provider: Box<dyn LlmProvider> = match &config.provider {
-            LlmProvider::OpenRouter => {
-                Box::new(openrouter::OpenRouterProvider::new(config.clone()).await?)
-            }
-            LlmProvider::DeepSeek => {
-                Box::new(deepseek::DeepSeekProvider::new(config.clone()).await?)
-            }
-            _ => {
-                return Err(KlarnetError::Nlu("Unsupported LLM provider".to_string()));
+            LlmProviderKind::OpenRouter => Box::new(OpenRouterProvider::new(config.clone()).await?),
+            LlmProviderKind::DeepSeek => Box::new(DeepSeekProvider::new(config.clone()).await?),
+            LlmProviderKind::OpenAI | LlmProviderKind::Custom(_) => {
+                return Err(KlarnetError::Nlu("Unsupported LLM provider".to_string()))
             }
         };
 
@@ -160,47 +170,75 @@ impl LlmConnector {
             None
         };
 
-        let prompt_builder = PromptBuilder::new();
-        let metrics = Arc::new(RwLock::new(LlmMetrics::default()));
-
         Ok(Self {
             config,
             provider,
             cache,
-            prompt_builder,
-            metrics,
+            prompt_builder: PromptBuilder::new(),
+            metrics: Arc::new(RwLock::new(LlmMetrics::default())),
         })
+    }
+    pub fn config(&self) -> &LlmConfig {
+        &self.config
+    }
+
+    pub fn metrics_snapshot(&self) -> LlmMetricsSnapshot {
+        let metrics = self.metrics.read();
+        LlmMetricsSnapshot {
+            provider: self.provider.name().to_string(),
+            total_requests: metrics.total_requests,
+            successful_requests: metrics.successful_requests,
+            failed_requests: metrics.failed_requests,
+            cache_hits: metrics.cache_hits,
+            total_tokens_used: metrics.total_tokens_used,
+            average_response_time_ms: metrics.average_response_time_ms,
+        }
+    }
+
+    pub fn prompt_builder(&self) -> &PromptBuilder {
+        &self.prompt_builder
     }
 
     pub async fn complete(&self, request: CompletionRequest) -> KlarnetResult<CompletionResponse> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
 
         // Check cache
         let cache_key = self.generate_cache_key(&request);
         if let Some(cache) = &self.cache {
             if let Some(response) = cache.get(&cache_key) {
-                self.metrics.write().cache_hits += 1;
-                debug!("LLM cache hit");
+                let mut metrics = self.metrics.write();
+                metrics.total_requests += 1;
+                metrics.successful_requests += 1;
+                metrics.cache_hits += 1;
                 return Ok(response);
             }
         }
 
-        // Make request with retries
+        {
+            let mut metrics = self.metrics.write();
+            metrics.total_requests += 1;
+        }
+
         let mut attempts = 0;
         let mut last_error = None;
 
         while attempts < self.config.retry_attempts {
+            attempts += 1;
             match self.provider.complete(request.clone()).await {
                 Ok(response) => {
                     // Update metrics
                     let duration = start.elapsed();
                     let mut metrics = self.metrics.write();
-                    metrics.total_requests += 1;
                     metrics.successful_requests += 1;
                     metrics.total_tokens_used += response.usage.total_tokens;
-                    metrics.average_response_time_ms =
-                        (metrics.average_response_time_ms * (metrics.successful_requests - 1) as f64
-                            + duration.as_millis() as f64) / metrics.successful_requests as f64;
+                    let successes = metrics.successful_requests.max(1);
+                    metrics.average_response_time_ms = if successes == 1 {
+                        duration.as_secs_f64() * 1000.0
+                    } else {
+                        ((metrics.average_response_time_ms * (successes - 1) as f64)
+                            + duration.as_secs_f64() * 1000.0)
+                            / successes as f64
+                    };
 
                     // Cache response
                     if let Some(cache) = &self.cache {
@@ -209,12 +247,11 @@ impl LlmConnector {
 
                     return Ok(response);
                 }
-                Err(e) => {
-                    attempts += 1;
-                    last_error = Some(e);
+                Err(err) => {
+                    last_error = Some(err);
 
                     if attempts < self.config.retry_attempts {
-                        let delay = Duration::from_millis(100 * 2u64.pow(attempts));
+                        let delay = Duration::from_millis(100 * 2u64.pow(attempts as u32));
                         warn!("LLM request failed, retrying in {:?}", delay);
                         tokio::time::sleep(delay).await;
                     }
@@ -222,8 +259,11 @@ impl LlmConnector {
             }
         }
 
-        self.metrics.write().failed_requests += 1;
-        Err(last_error.unwrap())
+        let mut metrics = self.metrics.write();
+        metrics.failed_requests += 1;
+        Err(last_error.unwrap_or_else(|| {
+            KlarnetError::Nlu("LLM request failed without specific error".to_string())
+        }))
     }
 
     pub async fn process_command(&self, text: &str) -> KlarnetResult<CommandInterpretation> {
@@ -253,8 +293,6 @@ impl LlmConnector {
     }
 
     fn generate_cache_key(&self, request: &CompletionRequest) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
         format!("{:?}", request).hash(&mut hasher);
@@ -276,9 +314,18 @@ impl LlmConnector {
                         "parameters": {
                             "type": "object",
                             "description": "Parameters for the action"
+                            },
+                        "route": {
+                            "type": "string",
+                            "description": "Optional routing target"
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0
                         }
                     },
-                    "required": ["action"]
+                    "required": ["action"],
                 }),
             },
             Function {
@@ -289,44 +336,107 @@ impl LlmConnector {
                     "properties": {
                         "answer": {
                             "type": "string",
-                            "description": "The answer to the question"
+                            "description": "The answer to the user question"
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0
                         }
                     },
-                    "required": ["answer"]
+                    "required": ["answer"],
                 }),
             },
         ]
     }
 
-    fn parse_command_response(&self, response: CompletionResponse) -> KlarnetResult<CommandInterpretation> {
-        if let Some(function_call) = response.function_call {
-            let args: Value = serde_json::from_str(&function_call.arguments)
-                .unwrap_or_else(|_| json!({}));
+    fn parse_command_response(
+        &self,
+        response: CompletionResponse,
+    ) -> KlarnetResult<CommandInterpretation> {
+        if let Some(function_call) = response.function_call.clone() {
+            let args: Value =
+                serde_json::from_str(&function_call.arguments).unwrap_or_else(|_| json!({}));
 
-            Ok(CommandInterpretation {
-                intent: function_call.name,
-                parameters: args,
+            let function_name = function_call.name.clone();
+
+            let (action, route) = match function_name.as_str() {
+                "execute_command" => (
+                    args.get("action")
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string()),
+                    args.get("route")
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string()),
+                ),
+                _ => (None, None),
+            };
+
+            let confidence = args
+                .get("confidence")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.9) as f32;
+
+            let parameters = args.get("parameters").cloned().unwrap_or_else(|| json!({}));
+
+            return Ok(CommandInterpretation {
+                intent: function_name.clone(),
+                parameters,
                 response_text: response.content,
-                confidence: 0.9,
-            })
-        } else {
-            // Try to parse JSON from content
-            if let Ok(json) = serde_json::from_str::<Value>(&response.content) {
-                Ok(CommandInterpretation {
-                    intent: json["intent"].as_str().unwrap_or("unknown").to_string(),
-                    parameters: json["parameters"].clone().unwrap_or(json!({})),
-                    response_text: json["response"].as_str().unwrap_or(&response.content).to_string(),
-                    confidence: json["confidence"].as_f64().unwrap_or(0.5) as f32,
-                })
-            } else {
-                Ok(CommandInterpretation {
-                    intent: "chat".to_string(),
-                    parameters: json!({}),
-                    response_text: response.content,
-                    confidence: 0.5,
-                })
-            }
+                confidence,
+                action,
+                route,
+                function_name: Some(function_name),
+                usage: response.usage,
+            });
         }
+
+        if let Ok(json) = serde_json::from_str::<Value>(&response.content) {
+            let intent = json
+                .get("intent")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let parameters = json.get("parameters").cloned().unwrap_or_else(|| json!({}));
+            let confidence = json
+                .get("confidence")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.5) as f32;
+            let action = json
+                .get("action")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            let route = json
+                .get("route")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            let response_text = json
+                .get("response")
+                .and_then(Value::as_str)
+                .unwrap_or(&response.content)
+                .to_string();
+
+            return Ok(CommandInterpretation {
+                intent,
+                parameters,
+                response_text,
+                confidence,
+                action,
+                route,
+                function_name: None,
+                usage: response.usage,
+            });
+        }
+        Ok(CommandInterpretation {
+            intent: "chat".to_string(),
+            parameters: json!({}),
+            response_text: response.content,
+            confidence: 0.5,
+            action: None,
+            route: None,
+            function_name: None,
+            usage: response.usage,
+        })
     }
 }
 
@@ -336,4 +446,8 @@ pub struct CommandInterpretation {
     pub parameters: Value,
     pub response_text: String,
     pub confidence: f32,
+    pub action: Option<String>,
+    pub route: Option<String>,
+    pub function_name: Option<String>,
+    pub usage: Usage,
 }

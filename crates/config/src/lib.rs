@@ -99,6 +99,44 @@ pub struct LlmNluConfig {
     pub max_tokens: usize,
     pub temperature: f32,
     pub timeout_s: u64,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default = "default_llm_top_p")]
+    pub top_p: f32,
+    #[serde(default = "default_llm_retry_attempts")]
+    pub retry_attempts: u32,
+    #[serde(default = "default_llm_cache_enabled")]
+    pub cache_enabled: bool,
+    #[serde(default = "default_llm_cache_ttl_s")]
+    pub cache_ttl_s: u64,
+    #[serde(default = "default_llm_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
+    #[serde(default = "default_llm_min_request_interval_ms")]
+    pub min_request_interval_ms: u64,
+}
+
+const fn default_llm_top_p() -> f32 {
+    0.95
+}
+
+const fn default_llm_retry_attempts() -> u32 {
+    3
+}
+
+const fn default_llm_cache_enabled() -> bool {
+    true
+}
+
+const fn default_llm_cache_ttl_s() -> u64 {
+    3600
+}
+
+const fn default_llm_max_concurrent_requests() -> usize {
+    1
+}
+
+const fn default_llm_min_request_interval_ms() -> u64 {
+    0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +247,13 @@ impl Default for KlarnetConfig {
                     max_tokens: 500,
                     temperature: 0.3,
                     timeout_s: 5,
+                    base_url: None,
+                    top_p: default_llm_top_p(),
+                    retry_attempts: default_llm_retry_attempts(),
+                    cache_enabled: default_llm_cache_enabled(),
+                    cache_ttl_s: default_llm_cache_ttl_s(),
+                    max_concurrent_requests: default_llm_max_concurrent_requests(),
+                    min_request_interval_ms: default_llm_min_request_interval_ms(),
                 }),
             },
             actions: ActionsConfig {
