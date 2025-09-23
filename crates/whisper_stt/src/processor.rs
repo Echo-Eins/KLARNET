@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::WhisperConfig;
+use crate::{WhisperBackendConfig, WhisperConfig};
 
 pub struct WhisperProcessor {
     config: WhisperConfig,
@@ -30,19 +30,41 @@ impl WhisperProcessor {
     }
 
     pub async fn start_process(&mut self) -> KlarnetResult<()> {
+        let python_config = match &self.config.backend {
+            WhisperBackendConfig::Python(cfg) => cfg,
+            WhisperBackendConfig::Native => {
+                return Err(KlarnetError::Stt(
+                    "Native backend is not supported by WhisperProcessor".to_string(),
+                ))
+            }
+        };
         // Start Python process for faster-whisper
-        let mut cmd = Command::new("python");
+        let mut cmd = Command::new(&python_config.executable);
         cmd.arg("-u")
-            .arg("scripts/whisper_server.py")
+            .arg(&python_config.script)
             .arg("--model-path")
-            .arg(&self.config.model_path)
+            .arg(self.config.model.model_path.to_string_lossy().to_string())
             .arg("--language")
             .arg(&self.config.language)
             .arg("--compute-type")
-            .arg(format!("{:?}", self.config.compute_type).to_lowercase())
+            .arg(&self.config.model.compute_type)
+            .arg("--device")
+            .arg(&self.config.model.device)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        for extra in &python_config.extra_args {
+            cmd.arg(extra);
+        }
+
+        if let Some(cache_dir) = self.config.model.cache_dir.as_ref() {
+            cmd.env("CT2_CACHE_DIR", cache_dir);
+        }
+
+        for (key, value) in &python_config.env {
+            cmd.env(key, value);
+        }
 
         let mut child = cmd
             .spawn()

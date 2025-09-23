@@ -36,6 +36,12 @@ pub struct MicrophoneSource {
 }
 
 #[cfg(feature = "hardware")]
+unsafe impl Send for MicrophoneSource {}
+
+#[cfg(feature = "hardware")]
+unsafe impl Sync for MicrophoneSource {}
+
+#[cfg(feature = "hardware")]
 impl MicrophoneSource {
     pub fn new() -> KlarnetResult<Self> {
         let host = cpal::default_host();
