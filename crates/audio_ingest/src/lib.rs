@@ -1,9 +1,9 @@
 use std::time::Duration;
 mod source;
 
+use klarnet_core::{AudioConfig, AudioFrame, KlarnetError, KlarnetResult};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use klarnet_core::{AudioConfig, AudioFrame, KlarnetError, KlarnetResult};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};

@@ -1,5 +1,8 @@
 use std::sync::Arc;
+#[cfg(feature = "hardware")]
+use std::sync::Mutex;
 use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use klarnet_core::{AudioConfig, AudioFrame, KlarnetError, KlarnetResult};
@@ -29,7 +32,7 @@ pub trait AudioSource: Send + Sync {
 #[cfg(feature = "hardware")]
 pub struct MicrophoneSource {
     device: Option<Device>,
-    stream: Option<Stream>,
+    stream: Mutex<Option<Stream>>,
 }
 
 #[cfg(feature = "hardware")]
@@ -44,7 +47,7 @@ impl MicrophoneSource {
 
         Ok(Self {
             device: Some(device),
-            stream: None,
+            stream: Mutex::new(None),
         })
     }
 
@@ -104,12 +107,21 @@ impl AudioSource for MicrophoneSource {
         stream
             .play()
             .map_err(|e| KlarnetError::Audio(e.to_string()))?;
-        self.stream = Some(stream);
+        *self
+            .stream
+            .lock()
+            .map_err(|_| KlarnetError::Audio("Failed to lock audio stream".to_string()))? =
+            Some(stream);
         Ok(())
     }
 
     async fn stop(&mut self) -> KlarnetResult<()> {
-        if let Some(stream) = self.stream.take() {
+        if let Some(stream) = self
+            .stream
+            .lock()
+            .map_err(|_| KlarnetError::Audio("Failed to lock audio stream".to_string()))?
+            .take()
+        {
             stream
                 .pause()
                 .map_err(|e| KlarnetError::Audio(e.to_string()))?;

@@ -2079,9 +2079,11 @@ dependencies = [
 name = "vad"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "klarnet-core",
  "serde",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
