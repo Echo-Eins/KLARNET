@@ -74,6 +74,23 @@ pub struct NluResult {
     pub intent: Option<Intent>,
     pub wake_word_detected: bool,
     pub command_type: CommandType,
+    pub confidence: f32,
+    pub parameters: serde_json::Map<String, serde_json::Value>,
+    pub routing: CommandRouting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandRouting {
+    pub route: CommandRoute,
+    pub target: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CommandRoute {
+    Local,
+    Llm,
+    Fallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
