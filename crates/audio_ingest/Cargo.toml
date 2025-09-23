@@ -1,4 +1,3 @@
-
 [package]
 name = "audio_ingest"
 version.workspace = true
@@ -6,7 +5,18 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+hardware = ["cpal"]
+
+
 [dependencies]
 klarnet-core = { path = "../core" }
 tokio.workspace = true
 tracing.workspace = true
+chrono.workspace = true
+async-trait = "0.1"
+
+[dependencies.cpal]
+version = "0.15"
+optional = true
