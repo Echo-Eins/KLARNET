@@ -1,89 +1,121 @@
-// Python script for faster-whisper (scripts/whisper_server.py)
-const WHISPER_PYTHON_SCRIPT: &str = r#"
 #!/usr/bin/env python3
-import sys
-import json
-import numpy as np
-from faster_whisper import WhisperModel
+"""Simple stdin/stdout bridge for running faster-whisper as a subprocess."""
+
 import argparse
+import json
 import logging
 import struct
+import sys
+from typing import Any, Dict, List
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import numpy as np
+from faster_whisper import WhisperModel
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model-path', required=True)
-    parser.add_argument('--language', default='ru')
-    parser.add_argument('--compute-type', default='int8_float16')
-    parser.add_argument('--device', default='cuda')
-    args = parser.parse_args()
+LOGGER = logging.getLogger(__name__)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run a faster-whisper inference server")
+    parser.add_argument("--model-path", required=True, help="Path to the Whisper model directory")
+    parser.add_argument("--language", default="ru", help="Spoken language to force during decoding")
+    parser.add_argument(
+        "--compute-type",
+        default="int8_float16",
+        help="Compute type to pass to faster-whisper",
+    )
+    parser.add_argument("--device", default="cpu", help="Device on which to run the model")
+    return parser.parse_args()
+
+def read_exact(stream: Any, size: int) -> bytes:
+    """Read exactly ``size`` bytes from ``stream`` or return an empty bytes object on EOF."""
+
+    data = bytearray()
+    while len(data) < size:
+        chunk = stream.read(size - len(data))
+        if not chunk:
+            return b""
+        data.extend(chunk)
+    return bytes(data)
+
+
+def build_response(segments) -> Dict[str, Any]:
+    response: Dict[str, Any] = {"segments": []}
+    for segment in segments:
+        segment_payload: Dict[str, Any] = {
+            "start": segment.start,
+            "end": segment.end,
+            "text": segment.text,
+            "words": [],
+        }
+
+        if segment.words:
+            words: List[Dict[str, Any]] = []
+            for word in segment.words:
+                words.append(
+                    {
+                        "word": word.word,
+                        "start": word.start,
+                        "end": word.end,
+                        "probability": word.probability,
+                    }
+                )
+            segment_payload["words"] = words
+
+        response["segments"].append(segment_payload)
+
+    return response
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    args = parse_args()
 
     # Load model
     model = WhisperModel(
         args.model_path,
         device=args.device,
-        compute_type=args.compute_type
+        compute_type=args.compute_type,
     )
 
-    logger.info(f"Model loaded: {args.model_path}")
+    LOGGER.info("Model loaded from %s", args.model_path)
+    stdin_buffer = sys.stdin.buffer
+    stdout_buffer = sys.stdout
 
     while True:
-        try:
-            # Read length prefix
-            length_bytes = sys.stdin.buffer.read(4)
-            if not length_bytes:
-                break
+        length_bytes = read_exact(stdin_buffer, 4)
+                if not length_bytes:
+                    LOGGER.info("EOF reached – terminating")
+                    break
 
-            length = struct.unpack('I', length_bytes)[0]
+                (sample_count,) = struct.unpack("<I", length_bytes)
+                pcm_bytes = read_exact(stdin_buffer, sample_count * 4)
+                if not pcm_bytes:
+                    LOGGER.warning("PCM payload missing – terminating")
+                    break
 
-            # Read PCM data
-            pcm_bytes = sys.stdin.buffer.read(length * 4)
-            pcm = np.frombuffer(pcm_bytes, dtype=np.float32)
+                pcm = np.frombuffer(pcm_bytes, dtype=np.float32)
 
-            # Transcribe
-            segments, info = model.transcribe(
-                pcm,
-                language=args.language,
-                beam_size=5,
-                word_timestamps=True,
-                vad_filter=True
-            )
+                try:
+                    segments, info = model.transcribe(
+                        pcm,
+                        language=args.language,
+                        beam_size=5,
+                        word_timestamps=True,
+                        vad_filter=True,
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                        LOGGER.exception("Error during transcription: %s", exc)
+                        print(json.dumps({"error": str(exc)}), file=sys.stderr, flush=True)
+                        continue
 
-            result = {
-                'language': info.language,
-                'segments': []
-            }
+                response = build_response(segments)
+                response["language"] = info.language
 
-            for segment in segments:
-                seg_data = {
-                    'start': segment.start,
-                    'end': segment.end,
-                    'text': segment.text,
-                    'words': []
-                }
+                stdout_buffer.write(json.dumps(response) + "\n")
+                stdout_buffer.flush()
 
-                if segment.words:
-                    for word in segment.words:
-                        seg_data['words'].append({
-                            'word': word.word,
-                            'start': word.start,
-                            'end': word.end,
-                            'probability': word.probability
-                        })
-
-                result['segments'].append(seg_data)
-
-            # Send result
-            sys.stdout.write(json.dumps(result) + '\n')
-            sys.stdout.flush()
-
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            sys.stderr.write(f"Error: {e}\n")
-            sys.stderr.flush()
-
-if __name__ == '__main__':
-    main()
-"#;
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        LOGGER.info("Interrupted – shutting down")

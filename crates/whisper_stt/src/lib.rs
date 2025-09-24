@@ -420,7 +420,7 @@ impl PythonWhisperProcess {
             .arg(&config.model.device)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::inherit());
 
         for extra in &self.config.extra_args {
             command.arg(extra);

@@ -32,7 +32,7 @@ compute_type = "int8"  # или "int8_float16" для GPU
 type = "python"
 
 [pipeline.stt.backend.python]
-executable = "python"
+executable = "python3"
 script = "scripts/whisper_server.py"
 
 [pipeline.nlu]
