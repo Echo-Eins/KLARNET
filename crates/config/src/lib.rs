@@ -268,7 +268,7 @@ impl Default for KlarnetConfig {
                 }),
                 llm: Some(LlmNluConfig {
                     provider: "openrouter".to_string(),
-                    model: "deepseek/deepseek-chat".to_string(),
+                    model: "x-ai/grok-4-fast:free".to_string(),
                     api_key_env: "OPENROUTER_API_KEY".to_string(),
                     max_tokens: 500,
                     temperature: 0.3,

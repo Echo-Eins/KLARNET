@@ -120,7 +120,7 @@ impl Default for LlmModeConfig {
         Self {
             provider: default_llm_provider(),
             api_key_env: "OPENROUTER_API_KEY".to_string(),
-            model: "deepseek/deepseek-chat".to_string(),
+            model: "x-ai/grok-4-fast:free".to_string(),
             base_url: None,
             max_tokens: default_llm_max_tokens(),
             temperature: default_llm_temperature(),

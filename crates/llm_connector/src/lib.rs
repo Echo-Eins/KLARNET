@@ -49,7 +49,7 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             provider: LlmProviderKind::OpenRouter,
-            model: "deepseek/deepseek-chat".to_string(),
+            model: "x-ai/grok-4-fast:free".to_string(),
             api_key_env: "OPENROUTER_API_KEY".to_string(),
             base_url: None,
             max_tokens: 500,
