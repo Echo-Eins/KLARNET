@@ -153,14 +153,40 @@ pub struct SmartHomeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsCacheConfig {
+    pub enabled: bool,
+    pub directory: PathBuf,
+    pub max_entries: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsMonitoringConfig {
+    pub enabled: bool,
+    pub min_rms: f32,
+    pub max_latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsRuntimeConfig {
+    pub python_path: PathBuf,
+    pub silero_script: PathBuf,
+    pub piper_binary: PathBuf,
+    pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TtsConfig {
     pub enabled: bool,
     pub engine: String,
+    pub language: String,
     pub model: String,
     pub speaker: String,
     pub sample_rate: u32,
     pub speed: f32,
-    pub device: String,
+    pub device: Option<String>,
+    pub cache: TtsCacheConfig,
+    pub monitoring: TtsMonitoringConfig,
+    pub runtime: TtsRuntimeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,11 +293,28 @@ impl Default for KlarnetConfig {
             tts: TtsConfig {
                 enabled: true,
                 engine: "silero".to_string(),
+                language: "ru".to_string(),
                 model: "v3_1_ru".to_string(),
                 speaker: "xenia".to_string(),
                 sample_rate: 48000,
                 speed: 1.0,
-                device: "cpu".to_string(),
+                device: Some("cpu".to_string()),
+                cache: TtsCacheConfig {
+                    enabled: true,
+                    directory: PathBuf::from("cache/tts"),
+                    max_entries: 128,
+                },
+                monitoring: TtsMonitoringConfig {
+                    enabled: true,
+                    min_rms: 0.01,
+                    max_latency_ms: 5_000,
+                },
+                runtime: TtsRuntimeConfig {
+                    python_path: PathBuf::from("python3"),
+                    silero_script: PathBuf::from("scripts/silero_tts.py"),
+                    piper_binary: PathBuf::from("piper"),
+                    request_timeout_ms: 15_000,
+                },
             },
             api: ApiConfig {
                 enabled: true,

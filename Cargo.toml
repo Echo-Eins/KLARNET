@@ -6,6 +6,7 @@ members = [
     "crates/whisper_stt",
     "crates/nlu",
     "crates/actions",
+    "crates/tts",
 ]
 resolver = "2"
 

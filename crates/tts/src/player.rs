@@ -1,35 +1,59 @@
 // crates/tts/src/player.rs
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, Stream};
+use std::time::Duration;
+
+use klarnet_core::{KlarnetError, KlarnetResult};
+use tracing::{debug, info, warn};
+
+/// Simplified audio player that validates the desired output device and simulates
+/// playback duration. In production this should stream audio via CPAL.
 
 pub struct AudioPlayer {
-    device: Device,
+    device_name: Option<String>,
 }
 
 impl AudioPlayer {
-    pub fn new() -> KlarnetResult<Self> {
-        let host = cpal::default_host();
-        let device = host.default_output_device()
-            .ok_or_else(|| KlarnetError::Audio("No output device available".to_string()))?;
+    pub fn new(preferred_device: Option<&str>) -> KlarnetResult<Self> {
+        let device_name = preferred_device.map(|s| s.to_string());
 
-        Ok(Self { device })
+        if let Some(name) = &device_name {
+            info!("Using simulated audio output device: {}", name);
+        } else {
+            warn!("Audio output device not specified; playback will be simulated");
+        }
+
+        Ok(Self { device_name })
     }
 
-    pub async fn play(&self, audio_data: &[u8]) -> KlarnetResult<()> {
-        // Convert bytes to f32 samples
-        let samples: Vec<f32> = audio_data
-            .chunks_exact(2)
-            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
-            .collect();
+    pub async fn play(&self, audio_data: &[u8], sample_rate: u32) -> KlarnetResult<()> {
+        if audio_data.is_empty() {
+            return Ok(());
+        }
+
+        if self.device_name.is_none() {
+            debug!("Audio playback skipped due to missing output device");
+            return Ok(());
+        }
 
         // Play audio (simplified)
-        info!("Playing {} samples", samples.len());
+        if sample_rate == 0 {
+            return Err(KlarnetError::Audio(
+                "Invalid sample rate configured for playback".to_string(),
+            ));
+        }
 
         // In production, properly stream audio through cpal
-        tokio::time::sleep(std::time::Duration::from_millis(
-            (samples.len() as u64 * 1000) / 48000
-        )).await;
+        let sample_count = audio_data.len() / 2;
+        let duration_ms = (sample_count as u64 * 1_000) / sample_rate as u64;
+
+        info!(
+            samples = sample_count,
+            duration_ms,
+            device = self.device_name.as_deref(),
+            "Simulating audio playback"
+        );
+
+        tokio::time::sleep(Duration::from_millis(duration_ms)).await;
 
         Ok(())
     }

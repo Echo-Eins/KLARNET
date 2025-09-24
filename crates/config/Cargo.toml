@@ -1,0 +1,21 @@
+[package]
+name = "tts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot = "0.12"
+tracing.workspace = true
+uuid.workspace = true
+klarnet-core = { path = "../core" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "process"] }
+tempfile = "3.10"
