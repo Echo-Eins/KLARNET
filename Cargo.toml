@@ -8,6 +8,7 @@ members = [
     "crates/actions",
     "crates/tts",
     "crates/observability",
+
 ]
 resolver = "2"
 
@@ -81,6 +82,8 @@ vad = { path = "crates/vad" }
 whisper_stt = { path = "crates/whisper_stt" }
 nlu = { path = "crates/nlu" }
 actions = { path = "crates/actions" }
+llm-connector = { path = "crates/llm_connector" }
+tts = { path = "crates/tts" }
 
 [build-dependencies]
 chrono.workspace = true

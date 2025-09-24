@@ -11,6 +11,9 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/vad/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/whisper_stt/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/llm_connector/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/observability/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/tts/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/tts/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
