@@ -42,14 +42,20 @@ fn init_logging() -> Result<()> {
 }
 
 async fn load_config() -> Result<AppConfig> {
-    let config_path = Path::new("config/app.toml");
-    if !config_path.exists() {
+    const CONFIG_CANDIDATES: [&str; 2] = ["config/app.toml", "config/klarnet.toml"];
+
+    let config_path = CONFIG_CANDIDATES
+        .iter()
+        .map(Path::new)
+        .find(|path| path.exists());
+
+    let Some(config_path) = config_path else {
         info!(
-            "Configuration file {:?} not found. Using defaults.",
-            config_path
+            "No configuration file found at any of {:?}. Using defaults.",
+            CONFIG_CANDIDATES
         );
         return Ok(AppConfig::default());
-    }
+    };
 
     let contents = fs::read_to_string(config_path)
         .await
