@@ -838,6 +838,7 @@ version = "0.1.0"
 dependencies = [
  "actions",
  "anyhow",
+ "async-trait",
  "audio_ingest",
  "chrono",
  "klarnet-core",

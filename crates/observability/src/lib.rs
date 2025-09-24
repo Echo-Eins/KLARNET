@@ -1,12 +1,11 @@
 // crates/observability/src/lib.rs
 
-use opentelemetry::{global, KeyValue};
 use opentelemetry_prometheus::PrometheusExporter;
 use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tracing::{debug, info};
+use std::time::Instant;
+use tracing::info;
 
 pub mod tracing_config;
 pub mod metrics;
@@ -54,19 +53,11 @@ impl MetricsCollector {
     pub fn with_config(config: ObservabilityConfig) -> Self {
         let metrics = Arc::new(Metrics::new());
 
-        let exporter = if config.metrics_enabled {
-            Some(
-                opentelemetry_prometheus::exporter()
-                    .with_resource(opentelemetry::sdk::Resource::new(vec![KeyValue::new(
-                        "service.name",
-                        config.service_name.clone(),
-                    )]))
-                    .build()
-                    .expect("Failed to create Prometheus exporter"),
-            )
-        } else {
-            None
-        };
+        let exporter = config.metrics_enabled.then(|| {
+            opentelemetry_prometheus::exporter()
+                .build()
+                .expect("Failed to create Prometheus exporter")
+        });
 
         if config.traces_enabled {
             Self::init_tracing(&config);

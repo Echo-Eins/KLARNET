@@ -85,6 +85,10 @@ actions = { path = "crates/actions" }
 llm-connector = { path = "crates/llm_connector" }
 tts = { path = "crates/tts" }
 
+[dev-dependencies]
+async-trait = "0.1"
+
+
 [build-dependencies]
 chrono.workspace = true
 tonic-build = "0.12"

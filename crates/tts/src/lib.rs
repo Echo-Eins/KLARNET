@@ -202,6 +202,17 @@ impl TtsEngine {
             }
         };
 
+        Self::from_backend(config, backend)
+    }
+
+    /// Creates an engine using a pre-constructed backend. Useful for tests and
+    /// environments where the backend should be injected manually.
+    pub fn from_backend(config: TtsConfig, backend: Box<dyn TtsBackend>) -> KlarnetResult<Self> {
+        Self::build(config, backend)
+    }
+
+    fn build(config: TtsConfig, backend: Box<dyn TtsBackend>) -> KlarnetResult<Self> {
+
         if config.cache.enabled {
             if let Err(err) = std::fs::create_dir_all(&config.cache.directory) {
                 return Err(KlarnetError::Io(err));
@@ -381,5 +392,9 @@ impl TtsEngine {
     pub fn cached_pcm_for_test(&self, text: &str) -> Option<Vec<u8>> {
         let cache_key = format!("{}:{}", self.backend.name(), text);
         self.cache.read().entries.get(&cache_key).cloned()
+    }
+    #[cfg_attr(not(test), doc(hidden))]
+    pub fn metrics_snapshot_for_test(&self) -> player::AudioMetricsSnapshot {
+        self.player.metrics_snapshot()
     }
 }

@@ -1026,8 +1026,8 @@ struct PlaybackMetrics {
     overruns: u64,
 }
 
-#[cfg(feature = "hardware-audio")]
 impl PlaybackMetrics {
+    #[cfg(feature = "hardware-audio")]
     fn delta(
         &self,
         previous: &PlaybackMetrics,

@@ -56,10 +56,17 @@ Common intents: lights_control, open_app, set_timer, weather, music_play, smart_
         let api_key = std::env::var(&config.api_key_env)
             .map_err(|_| KlarnetError::Nlu(format!("API key not found: {}", config.api_key_env)))?;
 
+        let endpoint = config
+            .base_url
+            .as_ref()
+            .map(|base| format!("{}/chat/completions", base.trim_end_matches('/')))
+            .unwrap_or_else(|| "https://openrouter.ai/api/v1/chat/completions".to_string());
+
         let response = self
             .client
-            .post("https://openrouter.ai/api/v1/chat/completions")
+            .post(&endpoint)
             .header("Authorization", format!("Bearer {}", api_key))
+            .header("HTTP-Referer", "https://github.com/klarnet")
             .json(&json!({
                 "model": config.model,
                 "messages": [

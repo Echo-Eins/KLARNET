@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+torch = pytest.importorskip("torch", reason="PyTorch is required for Silero helper tests")
+
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "silero_tts.py"
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "silero" / "v4_ru.pt"
