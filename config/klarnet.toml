@@ -49,7 +49,7 @@ entities_file = "config/entities.yaml"
 [nlu.llm]
 provider = "openrouter"
 model = "deepseek/deepseek-chat"
-api_key_env = "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"
+api_key_env = "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"
 max_tokens = 500
 temperature = 0.3
 timeout_s = 5
