@@ -49,7 +49,7 @@ entities_file = "config/entities.yaml"
 [nlu.llm]
 provider = "openrouter"
 model = "deepseek/deepseek-chat"
-api_key_env = "OPENROUTER_API_KEY"
+api_key_env = "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"
 max_tokens = 500
 temperature = 0.3
 timeout_s = 5
@@ -65,7 +65,7 @@ api_token_env = "HASS_TOKEN"
 [tts]
 enabled = true
 engine = "silero"  # silero | vits | piper
-model = "v3_1_ru"
+model = "v4_ru"
 speaker = "xenia"
 sample_rate = 48000
 speed = 1.0
