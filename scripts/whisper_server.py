@@ -26,9 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cpu", help="Device on which to run the model")
     return parser.parse_args()
 
+
 def read_exact(stream: Any, size: int) -> bytes:
     """Read exactly ``size`` bytes from ``stream`` or return an empty bytes object on EOF."""
-
     data = bytearray()
     while len(data) < size:
         chunk = stream.read(size - len(data))
@@ -82,37 +82,43 @@ def main() -> None:
     stdout_buffer = sys.stdout
 
     while True:
+        # Читаем первые 4 байта - длину блока
         length_bytes = read_exact(stdin_buffer, 4)
-                if not length_bytes:
-                    LOGGER.info("EOF reached – terminating")
-                    break
+        if not length_bytes:
+            LOGGER.info("EOF reached – terminating")
+            break
 
-                (sample_count,) = struct.unpack("<I", length_bytes)
-                pcm_bytes = read_exact(stdin_buffer, sample_count * 4)
-                if not pcm_bytes:
-                    LOGGER.warning("PCM payload missing – terminating")
-                    break
+        # Распаковываем длину (число сэмплов)
+        (sample_count,) = struct.unpack("<I", length_bytes)
 
-                pcm = np.frombuffer(pcm_bytes, dtype=np.float32)
+        # Читаем PCM данные
+        pcm_bytes = read_exact(stdin_buffer, sample_count * 4)
+        if not pcm_bytes:
+            LOGGER.warning("PCM payload missing – terminating")
+            break
 
-                try:
-                    segments, info = model.transcribe(
-                        pcm,
-                        language=args.language,
-                        beam_size=5,
-                        word_timestamps=True,
-                        vad_filter=True,
-                    )
-                except Exception as exc:  # pylint: disable=broad-except
-                        LOGGER.exception("Error during transcription: %s", exc)
-                        print(json.dumps({"error": str(exc)}), file=sys.stderr, flush=True)
-                        continue
+        pcm = np.frombuffer(pcm_bytes, dtype=np.float32)
 
-                response = build_response(segments)
-                response["language"] = info.language
+        try:
+            segments, info = model.transcribe(
+                pcm,
+                language=args.language,
+                beam_size=5,
+                word_timestamps=True,
+                vad_filter=True,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            LOGGER.exception("Error during transcription: %s", exc)
+            print(json.dumps({"error": str(exc)}), file=sys.stderr, flush=True)
+            continue
 
-                stdout_buffer.write(json.dumps(response) + "\n")
-                stdout_buffer.flush()
+        # Формируем ответ
+        response = build_response(segments)
+        response["language"] = info.language
+
+        stdout_buffer.write(json.dumps(response) + "\n")
+        stdout_buffer.flush()
+
 
 if __name__ == "__main__":
     try:
