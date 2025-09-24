@@ -12,7 +12,7 @@ pub mod tracing_config;
 pub mod metrics;
 pub mod health;
 
-use metrics::{Metrics, MetricType};
+use metrics::{MetricType, Metrics};
 
 /// Observability configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,12 +55,15 @@ impl MetricsCollector {
         let metrics = Arc::new(Metrics::new());
 
         let exporter = if config.metrics_enabled {
-            Some(opentelemetry_prometheus::exporter()
-                .with_resource(opentelemetry::sdk::Resource::new(vec![
-                    KeyValue::new("service.name", config.service_name.clone()),
-                ]))
-                .build()
-                .expect("Failed to create Prometheus exporter"))
+            Some(
+                opentelemetry_prometheus::exporter()
+                    .with_resource(opentelemetry::sdk::Resource::new(vec![KeyValue::new(
+                        "service.name",
+                        config.service_name.clone(),
+                    )]))
+                    .build()
+                    .expect("Failed to create Prometheus exporter"),
+            )
         } else {
             None
         };
@@ -87,6 +90,10 @@ impl MetricsCollector {
 
     pub fn record(&self, metric: MetricType, value: f64) {
         self.metrics.record(metric, value);
+    }
+
+    pub fn add(&self, metric: MetricType, value: f64) {
+        self.metrics.add(metric, value);
     }
 
     pub fn increment(&self, metric: MetricType) {

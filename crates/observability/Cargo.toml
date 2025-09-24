@@ -1,0 +1,16 @@
+[package]
+name = "klarnet-observability"
+version = "0.1.0"
+edition = "2021"
+authors = ["KLARNET Team"]
+license = "MIT"
+repository = "https://github.com/yourusername/klarnet"
+
+[dependencies]
+opentelemetry = "0.21"
+opentelemetry-prometheus = "0.14"
+prometheus = "0.13"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+parking_lot = "0.12"

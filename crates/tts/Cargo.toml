@@ -11,6 +11,7 @@ hardware-audio = ["cpal"]
 
 [dependencies]
 klarnet-core = { path = "../core" }
+klarnet-observability = { path = "../observability" }
 async-trait = "0.1"
 parking_lot = "0.12"
 serde.workspace = true
