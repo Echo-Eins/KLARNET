@@ -1,6 +1,8 @@
 // crates/tts/src/player.rs
 
 use std::time::Duration;
+#[cfg(feature = "hardware-audio")]
+use std::time::Instant;
 
 use klarnet_core::{KlarnetError, KlarnetResult};
 #[cfg(feature = "hardware-audio")]
@@ -14,14 +16,17 @@ use cpal::{SampleFormat, StreamConfig};
 #[cfg(feature = "hardware-audio")]
 use std::collections::VecDeque;
 #[cfg(feature = "hardware-audio")]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 #[cfg(feature = "hardware-audio")]
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex, RwLock};
 #[cfg(feature = "hardware-audio")]
 use tokio::sync::Notify;
+use tokio::sync::Semaphore;
 
 pub struct AudioPlayer {
     backend: AudioBackend,
+    concurrency: Arc<Semaphore>,
 }
 
 enum AudioBackend {
@@ -32,12 +37,15 @@ enum AudioBackend {
 
 impl AudioPlayer {
     pub fn new(preferred_device: Option<&str>) -> KlarnetResult<Self> {
+        let concurrency = Arc::new(Semaphore::new(1));
+
         #[cfg(feature = "hardware-audio")]
         {
             match RealAudioPlayer::new(preferred_device) {
                 Ok(real) => {
                     return Ok(Self {
                         backend: AudioBackend::Real(real),
+                        concurrency,
                     });
                 }
                 Err(err) => {
@@ -52,6 +60,7 @@ impl AudioPlayer {
         let simulated = SimulatedAudioPlayer::new();
         Ok(Self {
             backend: AudioBackend::Simulated(simulated),
+            concurrency,
         })
     }
 
@@ -92,19 +101,47 @@ impl AudioPlayer {
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
 
+        let _permit = self
+            .concurrency
+            .acquire()
+            .await
+            .expect("audio semaphore closed");
+
         match &self.backend {
             #[cfg(feature = "hardware-audio")]
             AudioBackend::Real(real) => {
-                let prepared = real.prepare_samples(&samples, channels, sample_rate)?;
-                let report = real.play(prepared).await?;
-                debug!(
-                    device = %real.device_name,
-                    duration_ms = report.duration.as_millis(),
-                    rms = report.rms,
-                    underruns = report.underruns,
-                    overruns = report.overruns,
-                    "Completed audio playback via CPAL"
-                );
+                const MAX_ATTEMPTS: usize = 3;
+                let mut last_err: Option<KlarnetError> = None;
+
+                for attempt in 1..=MAX_ATTEMPTS {
+                    match real.play_pcm(&samples, channels, sample_rate).await {
+                        Ok(report) => {
+                            debug!(
+                                device = %real.device_name(),
+                                duration_ms = report.duration.as_millis(),
+                                rms = report.rms,
+                                underruns = report.underruns,
+                                overruns = report.overruns,
+                                attempt,
+                                "Completed audio playback via CPAL"
+                            );
+                            return Ok(());
+                        }
+                        Err(err) => {
+                            warn!(
+                                attempt,
+                                max_attempts = MAX_ATTEMPTS,
+                                "Audio playback attempt failed: {err}"
+                            );
+                            last_err = Some(err);
+                            real.schedule_restart();
+                        }
+                    }
+                }
+
+                Err(last_err.unwrap_or_else(|| {
+                    KlarnetError::Audio("Audio playback failed after multiple attempts".to_string())
+                }))
             }
             AudioBackend::Simulated(sim) => {
                 let report = sim.play(&samples, sample_rate, channels).await;
@@ -113,10 +150,9 @@ impl AudioPlayer {
                     rms = report.rms,
                     "Simulated audio playback"
                 );
+                Ok(())
             }
         }
-
-        Ok(())
     }
 }
 
@@ -174,20 +210,383 @@ struct PlaybackReport {
 
 #[cfg(feature = "hardware-audio")]
 const BUFFER_CAPACITY_SOFT_LIMIT: usize = 48_000 * 10 * 2; // roughly ten seconds of stereo audio
-
+#[cfg(feature = "hardware-audio")]
 #[cfg(feature = "hardware-audio")]
 struct RealAudioPlayer {
-    device_name: String,
-    stream: cpal::Stream,
-    config: StreamConfig,
-    sample_format: SampleFormat,
-    state: Arc<PlayerState>,
-    buffer_soft_limit: usize,
+    supervisor: Arc<StreamSupervisor>,
 }
 
 #[cfg(feature = "hardware-audio")]
 impl RealAudioPlayer {
     fn new(preferred_device: Option<&str>) -> KlarnetResult<Self> {
+
+        let state = Arc::new(PlayerState::new());
+        let supervisor = StreamSupervisor::new(preferred_device, state)?;
+        Ok(Self { supervisor })
+    }
+
+    fn prepare_samples(
+        &self,
+        input: &[i16],
+        input_channels: u16,
+        input_sample_rate: u32,
+    ) -> KlarnetResult<Vec<i16>> {
+        if input.is_empty() {
+            return Ok(Vec::new());
+        }
+        let params = self.supervisor.current_params();
+        let config = params.config.clone();
+
+        let input_channels = input_channels as usize;
+        if input.len() % input_channels != 0 {
+            return Err(KlarnetError::Audio(
+                "PCM frame count does not align with reported channel count".to_string(),
+            ));
+        }
+
+        let frames = input.len() / input_channels;
+        let mut channel_data = vec![Vec::with_capacity(frames); input_channels];
+        for (index, sample) in input.iter().enumerate() {
+            let channel = index % input_channels;
+            channel_data[channel].push(*sample as f32 / i16::MAX as f32);
+        }
+
+        let resampled_channels: Vec<Vec<f32>> = if input_sample_rate == config.sample_rate.0 {
+            channel_data
+        } else {
+            channel_data
+                .into_iter()
+                .map(|channel| resample_linear(&channel, input_sample_rate, config.sample_rate.0))
+                .collect()
+        };
+
+        if resampled_channels.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let output_channels = config.channels as usize;
+        let frames = resampled_channels
+            .iter()
+            .map(|channel| channel.len())
+            .min()
+            .unwrap_or(0);
+
+        if frames == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut interleaved = Vec::with_capacity(frames * output_channels);
+
+        if output_channels == 1 {
+            for frame_idx in 0..frames {
+                let mut sum = 0.0f32;
+                for channel in &resampled_channels {
+                    sum += channel[frame_idx];
+                }
+                interleaved.push(clamp_to_i16(sum / resampled_channels.len() as f32));
+            }
+        } else if resampled_channels.len() == 1 {
+            let channel = &resampled_channels[0];
+            for frame_idx in 0..frames {
+                let sample = clamp_to_i16(channel[frame_idx]);
+                for _ in 0..output_channels {
+                    interleaved.push(sample);
+                }
+            }
+        } else {
+            for frame_idx in 0..frames {
+                for channel_idx in 0..output_channels {
+                    let source_idx = channel_idx % resampled_channels.len();
+                    let sample = clamp_to_i16(resampled_channels[source_idx][frame_idx]);
+                    interleaved.push(sample);
+                }
+            }
+        }
+
+        Ok(interleaved)
+    }
+
+    async fn play_prepared(&self, samples: Vec<i16>) -> KlarnetResult<PlaybackReport> {
+        if samples.is_empty() {
+            return Ok(PlaybackReport::default());
+        }
+
+        self.supervisor.ensure_stream().await?;
+        let state = self.supervisor.state();
+
+        let before = state.metrics_snapshot();
+        self.enqueue_samples(samples)?;
+
+        loop {
+            let notified = state.notify.notified();
+            if state.pending_samples.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            notified.await;
+            if state.pending_samples.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            if state.restart_requested() {
+                break;
+            }
+        }
+
+        if state.restart_requested() {
+            return Err(KlarnetError::Audio(
+                "Audio stream restart requested during playback".to_string(),
+            ));
+        }
+
+        let after = state.metrics_snapshot();
+        let params = self.supervisor.current_params();
+        Ok(after.delta(&before, params.config.sample_rate.0, params.config.channels))
+    }
+
+    fn enqueue_samples(&self, samples: Vec<i16>) -> KlarnetResult<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let state = self.supervisor.state();
+        let soft_limit = self.supervisor.current_buffer_soft_limit();
+        let overflow;
+        {
+            let mut buffer = state.buffer.lock().expect("player buffer mutex poisoned");
+            let new_len = buffer.len() + samples.len();
+            overflow = new_len.saturating_sub(soft_limit);
+            buffer.extend(samples.into_iter());
+        }
+
+        if overflow > 0 {
+            let mut metrics = state.metrics.lock().expect("metrics mutex poisoned");
+            metrics.overruns += overflow as u64;
+        }
+
+        self.state
+            .pending_samples
+            .fetch_add(samples.len(), Ordering::SeqCst);
+
+        Ok(())
+    }
+    async fn play_pcm(
+        &self,
+        input: &[i16],
+        input_channels: u16,
+        input_sample_rate: u32,
+    ) -> KlarnetResult<PlaybackReport> {
+        self.supervisor.ensure_stream().await?;
+        let prepared = self.prepare_samples(input, input_channels, input_sample_rate)?;
+        self.play_prepared(prepared).await
+    }
+
+    fn schedule_restart(&self) {
+        self.supervisor.schedule_restart();
+    }
+
+    fn device_name(&self) -> String {
+        self.supervisor.current_params().device_name
+    }
+}
+
+#[cfg(feature = "hardware-audio")]
+struct PlayerState {
+    buffer: Mutex<VecDeque<i16>>,
+    metrics: Mutex<PlaybackMetrics>,
+    pending_samples: AtomicUsize,
+    notify: Notify,
+    restart_requested: AtomicBool,
+}
+
+#[cfg(feature = "hardware-audio")]
+impl PlayerState {
+    fn new() -> Self {
+        Self {
+            buffer: Mutex::new(VecDeque::new()),
+            metrics: Mutex::new(PlaybackMetrics::default()),
+            pending_samples: AtomicUsize::new(0),
+            notify: Notify::new(),
+            restart_requested: AtomicBool::new(false),
+        }
+    }
+
+    fn metrics_snapshot(&self) -> PlaybackMetrics {
+        self.metrics.lock().expect("metrics mutex poisoned").clone()
+    }
+    fn request_restart(&self) {
+        self.restart_requested.store(true, Ordering::SeqCst);
+        self.pending_samples.store(0, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    fn take_restart_request(&self) -> bool {
+        self.restart_requested.swap(false, Ordering::SeqCst)
+    }
+
+    fn restart_requested(&self) -> bool {
+        self.restart_requested.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(feature = "hardware-audio")]
+struct StreamSupervisor {
+    state: Arc<PlayerState>,
+    preferred_device: Option<String>,
+    params: Arc<RwLock<StreamParams>>,
+    resources: tokio::sync::Mutex<StreamResources>,
+    last_device_check: Mutex<Instant>,
+}
+
+#[cfg(feature = "hardware-audio")]
+impl StreamSupervisor {
+    fn new(preferred_device: Option<&str>, state: Arc<PlayerState>) -> KlarnetResult<Arc<Self>> {
+        let (resources, params) = Self::build_stream(preferred_device, &state, &[])?;
+
+        Ok(Arc::new(Self {
+            state,
+            preferred_device: preferred_device.map(|name| name.to_string()),
+            params: Arc::new(RwLock::new(params)),
+            resources: tokio::sync::Mutex::new(resources),
+            last_device_check: Mutex::new(Instant::now()),
+        }))
+    }
+
+    fn current_params(&self) -> StreamParams {
+        self.params.read().expect("stream params poisoned").clone()
+    }
+
+    fn current_buffer_soft_limit(&self) -> usize {
+        self.current_params().buffer_soft_limit
+    }
+
+    fn schedule_restart(&self) {
+        self.state.request_restart();
+    }
+
+    fn state(&self) -> &Arc<PlayerState> {
+        &self.state
+    }
+
+    async fn ensure_stream(&self) -> KlarnetResult<()> {
+        if self.state.take_restart_request() {
+            if let Err(err) = self.rebuild_stream("restart requested").await {
+                self.state.request_restart();
+                return Err(err);
+            }
+            return Ok(());
+        }
+
+        if self.device_check_due() {
+            if let Err(err) = self.verify_device().await {
+                warn!("Audio device health check failed: {err}");
+                if let Err(rebuild_err) = self.rebuild_stream("device health check failed").await {
+                    self.state.request_restart();
+                    return Err(rebuild_err);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn rebuild_stream(&self, reason: &str) -> KlarnetResult<()> {
+        let previous = self.current_params().device_name;
+        warn!(reason, previous_device = %previous, "Reinitializing audio output stream");
+
+        let (resources, params) = Self::build_stream(
+            self.preferred_device.as_deref(),
+            &self.state,
+            &[previous.clone()],
+        )?;
+
+        {
+            let mut guard = self.params.write().expect("stream params poisoned");
+            *guard = params.clone();
+        }
+
+        {
+            let mut guard = self.resources.lock().await;
+            *guard = resources;
+        }
+
+        *self
+            .last_device_check
+            .lock()
+            .expect("device check mutex poisoned") = Instant::now();
+
+        info!(
+            device = %params.device_name,
+            sample_rate = params.config.sample_rate.0,
+            channels = params.config.channels,
+            format = ?params.sample_format,
+            "Audio stream restarted"
+        );
+
+        Ok(())
+    }
+
+    fn device_check_due(&self) -> bool {
+        const DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+        let last = *self
+            .last_device_check
+            .lock()
+            .expect("device check mutex poisoned");
+        last.elapsed() >= DEVICE_CHECK_INTERVAL
+    }
+
+    async fn verify_device(&self) -> KlarnetResult<()> {
+        let guard = self.resources.lock().await;
+        guard
+            .device
+            .default_output_config()
+            .map_err(|err| KlarnetError::Audio(format!("Audio device unavailable: {err}")))?;
+        drop(guard);
+
+        *self
+            .last_device_check
+            .lock()
+            .expect("device check mutex poisoned") = Instant::now();
+        Ok(())
+    }
+
+    fn build_stream(
+        preferred_device: Option<&str>,
+        state: &Arc<PlayerState>,
+        priority: &[String],
+    ) -> KlarnetResult<(StreamResources, StreamParams)> {
+        let mut devices = Self::enumerate_devices()?;
+        if devices.is_empty() {
+            return Err(KlarnetError::Audio(
+                "No audio output device could be selected".to_string(),
+            ));
+        }
+
+        let preferred_lower = preferred_device.map(|name| name.to_ascii_lowercase());
+
+        devices.sort_by(|(_, a_name), (_, b_name)| {
+            let a_priority = Self::device_priority(a_name, &preferred_lower, priority);
+            let b_priority = Self::device_priority(b_name, &preferred_lower, priority);
+            a_priority.cmp(&b_priority)
+        });
+
+        let mut last_err: Option<KlarnetError> = None;
+
+        for (device, name) in devices {
+            match Self::create_stream_for_device(device, &name, state) {
+                Ok(result) => {
+                    return Ok(result);
+                }
+                Err(err) => {
+                    warn!(device = %name, "Failed to initialize audio stream: {err}");
+                    last_err = Some(err);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            KlarnetError::Audio("Unable to initialize any audio output device".to_string())
+        }))
+    }
+
+    fn enumerate_devices() -> KlarnetResult<Vec<(cpal::Device, String)>> {
         let hosts = cpal::available_hosts();
         if hosts.is_empty() {
             return Err(KlarnetError::Audio(
@@ -195,52 +594,62 @@ impl RealAudioPlayer {
             ));
         }
 
-        let preferred_lower = preferred_device.map(|name| name.to_ascii_lowercase());
-        let mut selected_device: Option<(cpal::Device, String)> = None;
-
-        for host_id in &hosts {
-            let host = cpal::host_from_id(*host_id).map_err(|err| {
+        let mut devices = Vec::new();
+        for host_id in hosts {
+            let host = cpal::host_from_id(host_id).map_err(|err| {
                 KlarnetError::Audio(format!(
                     "Failed to initialize audio host {host_id:?}: {err}"
                 ))
             })?;
 
-            let host_name = format!("{host_id:?}");
-            if let Ok(devices) = host.output_devices() {
-                for device in devices {
+            if let Ok(output_devices) = host.output_devices() {
+                for device in output_devices {
                     let name = device
                         .name()
                         .unwrap_or_else(|_| "Unnamed output device".to_string());
-                    info!(host = %host_name, device = %name, "Detected audio output device");
-                    if let Some(preferred) = &preferred_lower {
-                        if name.to_ascii_lowercase().contains(preferred) {
-                            selected_device = Some((device, name));
-                            break;
-                        }
-                    }
+                    info!(host = ?host_id, device = %name, "Detected audio output device");
+                    devices.push((device, name));
                 }
-            }
-
-            if selected_device.is_some() {
-                break;
             }
         }
 
-        if selected_device.is_none() {
+        if devices.is_empty() {
             let default_host = cpal::default_host();
             if let Some(default_device) = default_host.default_output_device() {
                 let name = default_device
                     .name()
                     .unwrap_or_else(|_| "Default output device".to_string());
                 info!(device = %name, "Using default audio output device");
-                selected_device = Some((default_device, name));
+                devices.push((default_device, name));
             }
         }
 
-        let (device, device_name) = selected_device.ok_or_else(|| {
-            KlarnetError::Audio("No audio output device could be selected".to_string())
-        })?;
+        Ok(devices)
+    }
 
+    fn device_priority(
+        name: &str,
+        preferred: &Option<String>,
+        priority: &[String],
+    ) -> (u8, usize, String) {
+        if let Some(position) = priority.iter().position(|candidate| candidate == name) {
+            return (0, position, name.to_string());
+        }
+
+        if let Some(preferred_lower) = preferred {
+            if name.to_ascii_lowercase().contains(preferred_lower) {
+                return (1, 0, name.to_string());
+            }
+        }
+
+        (2, 0, name.to_string())
+    }
+
+    fn create_stream_for_device(
+        device: cpal::Device,
+        device_name: &str,
+        state: &Arc<PlayerState>,
+    ) -> KlarnetResult<(StreamResources, StreamParams)> {
         let supported_config = device
             .default_output_config()
             .map_err(|err| KlarnetError::Audio(format!("Failed to query device config: {err}")))?;
@@ -255,15 +664,16 @@ impl RealAudioPlayer {
             "Starting CPAL audio stream"
         );
 
-        let state = Arc::new(PlayerState::new());
         let buffer_soft_limit = BUFFER_CAPACITY_SOFT_LIMIT
             .max(config.sample_rate.0 as usize * config.channels as usize * 2);
 
         let stream_state = state.clone();
-        let channels = config.channels as usize;
+        let error_state = state.clone();
+        let name_for_error = device_name.to_string();
 
         let err_fn = move |err| {
-            warn!("Audio stream error: {err}");
+            warn!(device = %name_for_error, "Audio stream error: {err}");
+            error_state.request_restart();
         };
 
         let stream = match sample_format {
@@ -318,172 +728,30 @@ impl RealAudioPlayer {
             .play()
             .map_err(|err| KlarnetError::Audio(format!("Failed to start audio stream: {err}")))?;
 
-        Ok(Self {
-            device_name,
-            stream,
-            config,
+        let params = StreamParams {
+            device_name: device_name.to_string(),
+            config: config.clone(),
             sample_format,
-            state,
             buffer_soft_limit,
-        })
-    }
-
-    fn prepare_samples(
-        &self,
-        input: &[i16],
-        input_channels: u16,
-        input_sample_rate: u32,
-    ) -> KlarnetResult<Vec<i16>> {
-        if input.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let input_channels = input_channels as usize;
-        if input.len() % input_channels != 0 {
-            return Err(KlarnetError::Audio(
-                "PCM frame count does not align with reported channel count".to_string(),
-            ));
-        }
-
-        let frames = input.len() / input_channels;
-        let mut channel_data = vec![Vec::with_capacity(frames); input_channels];
-        for (index, sample) in input.iter().enumerate() {
-            let channel = index % input_channels;
-            channel_data[channel].push(*sample as f32 / i16::MAX as f32);
-        }
-
-        let resampled_channels: Vec<Vec<f32>> = if input_sample_rate == self.config.sample_rate.0 {
-            channel_data
-        } else {
-            channel_data
-                .into_iter()
-                .map(|channel| {
-                    resample_linear(&channel, input_sample_rate, self.config.sample_rate.0)
-                })
-                .collect()
         };
 
-        if resampled_channels.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let output_channels = self.config.channels as usize;
-        let frames = resampled_channels
-            .iter()
-            .map(|channel| channel.len())
-            .min()
-            .unwrap_or(0);
-
-        if frames == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut interleaved = Vec::with_capacity(frames * output_channels);
-
-        if output_channels == 1 {
-            for frame_idx in 0..frames {
-                let mut sum = 0.0f32;
-                for channel in &resampled_channels {
-                    sum += channel[frame_idx];
-                }
-                interleaved.push(clamp_to_i16(sum / resampled_channels.len() as f32));
-            }
-        } else if resampled_channels.len() == 1 {
-            let channel = &resampled_channels[0];
-            for frame_idx in 0..frames {
-                let sample = clamp_to_i16(channel[frame_idx]);
-                for _ in 0..output_channels {
-                    interleaved.push(sample);
-                }
-            }
-        } else {
-            for frame_idx in 0..frames {
-                for channel_idx in 0..output_channels {
-                    let source_idx = channel_idx % resampled_channels.len();
-                    let sample = clamp_to_i16(resampled_channels[source_idx][frame_idx]);
-                    interleaved.push(sample);
-                }
-            }
-        }
-
-        Ok(interleaved)
-    }
-
-    async fn play(&self, samples: Vec<i16>) -> KlarnetResult<PlaybackReport> {
-        if samples.is_empty() {
-            return Ok(PlaybackReport::default());
-        }
-
-        let before = self.state.metrics_snapshot();
-        self.enqueue_samples(samples)?;
-
-        loop {
-            let notified = self.state.notify.notified();
-            if self.state.pending_samples.load(Ordering::SeqCst) == 0 {
-                break;
-            }
-            notified.await;
-            if self.state.pending_samples.load(Ordering::SeqCst) == 0 {
-                break;
-            }
-        }
-
-        let after = self.state.metrics_snapshot();
-        Ok(after.delta(&before, self.config.sample_rate.0, self.config.channels))
-    }
-
-    fn enqueue_samples(&self, samples: Vec<i16>) -> KlarnetResult<()> {
-        if samples.is_empty() {
-            return Ok(());
-        }
-
-        let overflow;
-        {
-            let mut buffer = self
-                .state
-                .buffer
-                .lock()
-                .expect("player buffer mutex poisoned");
-            let new_len = buffer.len() + samples.len();
-            overflow = new_len.saturating_sub(self.buffer_soft_limit);
-            buffer.extend(samples.into_iter());
-        }
-
-        if overflow > 0 {
-            let mut metrics = self.state.metrics.lock().expect("metrics mutex poisoned");
-            metrics.overruns += overflow as u64;
-        }
-
-        self.state
-            .pending_samples
-            .fetch_add(samples.len(), Ordering::SeqCst);
-
-        Ok(())
+        Ok((StreamResources { device, stream }, params))
     }
 }
 
 #[cfg(feature = "hardware-audio")]
-struct PlayerState {
-    buffer: Mutex<VecDeque<i16>>,
-    metrics: Mutex<PlaybackMetrics>,
-    pending_samples: AtomicUsize,
-    notify: Notify,
+#[derive(Clone)]
+struct StreamParams {
+    device_name: String,
+    config: StreamConfig,
+    sample_format: SampleFormat,
+    buffer_soft_limit: usize,
 }
 
 #[cfg(feature = "hardware-audio")]
-impl PlayerState {
-    fn new() -> Self {
-        Self {
-            buffer: Mutex::new(VecDeque::new()),
-            metrics: Mutex::new(PlaybackMetrics::default()),
-            pending_samples: AtomicUsize::new(0),
-            notify: Notify::new(),
-        }
-    }
-
-    fn metrics_snapshot(&self) -> PlaybackMetrics {
-        self.metrics.lock().expect("metrics mutex poisoned").clone()
-    }
+struct StreamResources {
+    device: cpal::Device,
+    stream: cpal::Stream,
 }
 
 #[cfg(feature = "hardware-audio")]
