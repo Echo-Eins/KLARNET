@@ -1,0 +1,47 @@
+# config/app.toml
+assistant_name = "KLARNET"
+
+[audio]
+sample_rate = 16000
+channels = 1
+buffer_size = 1024
+device = "default"
+
+[pipeline]
+wake_word = "кларнет"
+pre_roll_ms = 1000
+max_segment_duration_ms = 30000
+
+[pipeline.vad]
+mode = "webrtc"
+frame_duration_ms = 30
+min_speech_duration_ms = 200
+min_silence_duration_ms = 500
+
+[pipeline.stt]
+language = "ru"
+request_timeout_ms = 30000
+initialization_timeout_ms = 120000
+
+[pipeline.stt.model]
+model_path = "models/whisper-medium"
+device = "cpu"  # или "cuda" для GPU
+compute_type = "int8"  # или "int8_float16" для GPU
+
+[pipeline.stt.backend]
+type = "python"
+
+[pipeline.stt.backend.python]
+executable = "python"
+script = "scripts/whisper_server.py"
+
+[pipeline.nlu]
+mode = "local"
+wake_words = ["кларнет", "ассистент", "компьютер"]
+confidence_threshold = 0.7
+
+[llm]
+enabled = true  # Включите если нужен LLM
+
+[tts]
+enabled = true  # Включите если нужен TTS
