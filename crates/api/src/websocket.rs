@@ -101,7 +101,10 @@ async fn process_audio_chunk(
                         "is_final": false,
                     });
 
-                    let _ = sender.send(Message::Text(response.to_string())).await;
+                    if let Err(e) = sender.send(Message::Text(response.to_string())).await {
+                        error!("Failed to send WebSocket message: {}", e);
+                        break;
+                    }
                 }
                 Err(e) => {
                     let error_response = json!({
