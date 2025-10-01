@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use klarnet_core::{
-    AudioChunk, KlarnetError, KlarnetResult, Transcript, TranscriptSegment, WordInfo,
+    resolve_python_path, AudioChunk, KlarnetError, KlarnetResult, Transcript, TranscriptSegment,
+    WordInfo,
 };
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -66,7 +67,7 @@ pub struct WhisperPythonConfig {
 
 impl WhisperPythonConfig {
     fn default_executable() -> PathBuf {
-        PathBuf::from("python3")
+        resolve_python_path()
     }
 
     fn default_script() -> PathBuf {

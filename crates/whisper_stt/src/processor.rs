@@ -1,7 +1,9 @@
 // crates/whisper_stt/src/processor.rs
 use std::time::Duration;
 
-use klarnet_core::{KlarnetError, KlarnetResult, Transcript, TranscriptSegment, WordInfo};
+use klarnet_core::{
+    resolve_project_path, KlarnetError, KlarnetResult, Transcript, TranscriptSegment, WordInfo,
+};
 use std::process::Stdio;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -38,10 +40,31 @@ impl WhisperProcessor {
                 ))
             }
         };
+        let python_path = if python_config.executable.is_relative()
+            && python_config.executable.components().count() > 1
+        {
+            resolve_project_path(&python_config.executable)
+        } else {
+            python_config.executable.clone()
+        };
+
+        let script_path = if python_config.script.is_relative() {
+            resolve_project_path(&python_config.script)
+        } else {
+            python_config.script.clone()
+        };
+
+        if !script_path.exists() {
+            return Err(KlarnetError::Stt(format!(
+                "Whisper server script not found: {}",
+                script_path.display()
+            )));
+        }
+
         // Start Python process for faster-whisper
-        let mut cmd = Command::new(&python_config.executable);
+        let mut cmd = Command::new(&python_path);
         cmd.arg("-u")
-            .arg(&python_config.script)
+            .arg(&script_path)
             .arg("--model-path")
             .arg(self.config.model.model_path.to_string_lossy().to_string())
             .arg("--language")
@@ -64,6 +87,13 @@ impl WhisperProcessor {
 
         for (key, value) in &python_config.env {
             cmd.env(key, value);
+        }
+
+        if python_path.is_absolute() && !python_path.is_file() {
+            info!(
+                "Python executable {} not found on disk; relying on PATH",
+                python_path.display()
+            );
         }
 
         let mut child = cmd

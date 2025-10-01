@@ -1,6 +1,6 @@
 // crates/config/src/lib.rs
 
-use klarnet_core::{KlarnetError, KlarnetResult};
+use klarnet_core::{resolve_python_path, KlarnetError, KlarnetResult};
 use notify::{Event, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -310,7 +310,7 @@ impl Default for KlarnetConfig {
                     max_latency_ms: 5_000,
                 },
                 runtime: TtsRuntimeConfig {
-                    python_path: PathBuf::from("python3"),
+                    python_path: resolve_python_path(),
                     silero_script: PathBuf::from("scripts/silero_tts.py"),
                     piper_binary: PathBuf::from("piper"),
                     request_timeout_ms: 15_000,

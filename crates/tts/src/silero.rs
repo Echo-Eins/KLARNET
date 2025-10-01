@@ -1,11 +1,11 @@
 // crates/tts/src/silero.rs
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use klarnet_core::{KlarnetError, KlarnetResult};
+use klarnet_core::{resolve_project_path, KlarnetError, KlarnetResult};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -20,31 +20,43 @@ use crate::{TtsBackend, TtsConfig};
 
 pub struct SileroTts {
     config: TtsConfig,
+    script_path: PathBuf,
     process: Arc<Mutex<Option<SileroProcess>>>,
 }
 
 impl SileroTts {
     pub async fn new(config: TtsConfig) -> KlarnetResult<Self> {
-        if !config.runtime.silero_script.exists() {
+        let script_path = resolve_project_path(&config.runtime.silero_script);
+
+        if !script_path.exists() {
             return Err(KlarnetError::Action(format!(
                 "Silero script not found: {}",
-                config.runtime.silero_script.display()
+                script_path.display()
             )));
         }
 
-        let process = Self::spawn_process(&config).await?;
+        let process = Self::spawn_process(&config, &script_path).await?;
 
         Ok(Self {
             config,
+            script_path,
             process: Arc::new(Mutex::new(Some(process))),
         })
     }
 
-    async fn spawn_process(config: &TtsConfig) -> KlarnetResult<SileroProcess> {
-        let mut command = Command::new(&config.runtime.python_path);
+    async fn spawn_process(config: &TtsConfig, script_path: &Path) -> KlarnetResult<SileroProcess> {
+        let python_path = if config.runtime.python_path.is_relative()
+            && config.runtime.python_path.components().count() > 1
+        {
+            resolve_project_path(&config.runtime.python_path)
+        } else {
+            config.runtime.python_path.clone()
+        };
+
+        let mut command = Command::new(&python_path);
         command
             .arg("-u")
-            .arg(&config.runtime.silero_script)
+            .arg(script_path)
             .arg("--model")
             .arg(&config.model)
             .arg("--speaker")
@@ -59,10 +71,10 @@ impl SileroTts {
             command.arg("--device").arg(device);
         }
 
-        if !Path::new(&config.runtime.python_path).is_file() {
+        if python_path.is_absolute() && !python_path.is_file() {
             info!(
                 "Python executable {} not found on disk; relying on PATH",
-                config.runtime.python_path.display()
+                python_path.display()
             );
         }
 
@@ -120,7 +132,7 @@ impl SileroTts {
         }
 
         if restart_required {
-            let process = Self::spawn_process(&self.config).await?;
+            let process = Self::spawn_process(&self.config, &self.script_path).await?;
             *guard = Some(process);
         }
 
