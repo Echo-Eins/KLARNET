@@ -496,7 +496,7 @@ min_silence_duration_ms = 500 # Пауза для конца фразы
 [stt]
 model_path = "models/whisper-medium"
 model_size = "medium"          # tiny, base, small, medium, large
-compute_type = "int8_float16"  # int8, int8_float16, float16, float32
+compute_type = "int8_float16"  # Для CPU по умолчанию используется int8; int8_float16 подходит для GPU
 language = "ru"
 beam_size = 5                  # 1-10 (качество vs скорость)
 vad_filter = true

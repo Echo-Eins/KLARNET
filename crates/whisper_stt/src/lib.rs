@@ -3,14 +3,15 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use klarnet_core::{
-    resolve_python_path, AudioChunk, KlarnetError, KlarnetResult, Transcript, TranscriptSegment,
-    WordInfo,
+    resolve_project_path, resolve_python_path, AudioChunk, KlarnetError, KlarnetResult, Transcript,
+    TranscriptSegment, WordInfo,
 };
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::{sleep, timeout};
+use tracing::debug;
 
 const SUPPORTED_LANGUAGES: &[&str] = &[
     "af", "am", "ar", "as", "az", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de",
@@ -38,7 +39,7 @@ impl WhisperModelConfig {
     }
 
     fn default_compute_type() -> String {
-        "float16".to_string()
+        "int8".to_string()
     }
 }
 
@@ -407,12 +408,19 @@ impl PythonWhisperProcess {
                 .map_err(|err| KlarnetError::Stt(err.to_string()))?;
         }
 
+        let model_path = resolve_project_path(&config.model.model_path);
+
+        debug! (
+            "Resolved project model path for faster-whisper backend: {}",
+                model_path.display(),
+        );
+
         let mut command = Command::new(&self.config.executable);
         command
             .arg("-u")
             .arg(&self.config.script)
             .arg("--model-path")
-            .arg(config.model.model_path.to_string_lossy().to_string())
+            .arg(model_path.to_string_lossy().to_string())
             .arg("--language")
             .arg(&config.language)
             .arg("--compute-type")
