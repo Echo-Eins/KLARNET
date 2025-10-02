@@ -27,6 +27,7 @@ initialization_timeout_ms = 120000
 model_path = "models/whisper-medium"
 device = "cpu"  # или "cuda" для GPU
 compute_type = "int8"  # или "int8_float16" для GPU
+cache_dir = "cache/whisper"
 
 [pipeline.stt.backend]
 type = "python"
