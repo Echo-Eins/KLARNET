@@ -24,7 +24,7 @@ energy_threshold = 0.01
 speech_pad_ms = 300
 
 [stt]
-model_path = "models/faster-whisper-medium"
+model_path = "D/Coding/Rust/KLARNET/models/faster-whisper-medium"
 model_size = "medium"  # tiny | base | small | medium | large
 compute_type = "int8_float16"
 language = "ru"
