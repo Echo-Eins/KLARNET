@@ -78,7 +78,7 @@ impl Default for LlmAppConfig {
         let mut connector = LlmConfig::default();
         connector.model = "x-ai/grok-4-fast:free".to_string();
         Self {
-            enabled: false,
+            enabled: true,
             connector,
             system_prompt: default_llm_system_prompt(),
             max_history_messages: default_llm_history_size(),
@@ -88,7 +88,7 @@ impl Default for LlmAppConfig {
 
 fn default_tts_engine_config() -> TtsConfig {
     let mut config = TtsConfig::default();
-    config.enabled = false;
+    config.enabled = true;
     config
 }
 
