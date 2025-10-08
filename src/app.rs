@@ -128,11 +128,13 @@ impl KlarnetApp {
                 "Initialising LLM connector with model '{}'.",
                 config.llm.connector.model
             );
-            Some(Arc::new(
-                LlmConnector::new(config.llm.connector.clone())
-                    .await
-                    .map_err(|err| anyhow!(err))?,
-            ))
+            match LlmConnector::new(config.llm.connector.clone()).await {
+                Ok(connector) => Some(Arc::new(connector)),
+                Err(err) => {
+                    error!("Failed to initialise LLM connector: {err}");
+                    None
+                }
+            }
         } else {
             info!("LLM connector is disabled in configuration");
             None
