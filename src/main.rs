@@ -1,8 +1,11 @@
 // src/main.rs
 
-use std::path::Path;
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use tokio::fs;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -42,6 +45,16 @@ fn init_logging() -> Result<()> {
 }
 
 async fn load_config() -> Result<AppConfig> {
+    if let Some(path) = config_path_override()? {
+        return load_config_from_path(path).await;
+    }
+
+    if let Ok(env_path) = env::var("KLARNET_CONFIG") {
+        let trimmed = env_path.trim();
+        if !trimmed.is_empty() {
+            return load_config_from_path(trimmed).await;
+        }
+    }
     const CONFIG_CANDIDATES: [&str; 2] = ["config/app.toml", "config/klarnet.toml"];
 
     let config_path = CONFIG_CANDIDATES
@@ -57,13 +70,40 @@ async fn load_config() -> Result<AppConfig> {
         return Ok(AppConfig::default());
     };
 
-    let contents = fs::read_to_string(config_path)
+    load_config_from_path(config_path).await
+}
+
+async fn load_config_from_path(path: impl AsRef<Path>) -> Result<AppConfig> {
+    let path = path.as_ref().to_path_buf();
+
+    let contents = fs::read_to_string(&path)
         .await
-        .with_context(|| format!("Failed to read configuration from {:?}", config_path))?;
+        .with_context(|| format!("Failed to read configuration from {:?}", path))?;
 
     let config: AppConfig = toml::from_str(&contents)
-        .with_context(|| format!("Invalid configuration in {:?}", config_path))?;
+        .with_context(|| format!("Invalid configuration in {:?}", path))?;
 
-    info!("Loaded configuration from {:?}", config_path);
+    info!("Loaded configuration from {:?}", path);
     Ok(config)
+}
+fn config_path_override() -> Result<Option<PathBuf>> {
+    let mut args = env::args().skip(1);
+    let mut override_path: Option<PathBuf> = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--config" | "-c" => {
+                let Some(value) = args.next() else {
+                    return Err(anyhow!("Expected path after {}", arg));
+                };
+                override_path = Some(PathBuf::from(value));
+            }
+            _ if override_path.is_none() && !arg.starts_with('-') => {
+                override_path = Some(PathBuf::from(arg));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(override_path)
 }

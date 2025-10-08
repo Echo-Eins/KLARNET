@@ -95,6 +95,8 @@ pub struct LocalNluConfig {
 pub struct LlmNluConfig {
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
     pub api_key_env: String,
     pub max_tokens: usize,
     pub temperature: f32,
@@ -269,6 +271,7 @@ impl Default for KlarnetConfig {
                 llm: Some(LlmNluConfig {
                     provider: "openrouter".to_string(),
                     model: "x-ai/grok-4-fast:free".to_string(),
+                    api_key: None,
                     api_key_env: "OPENROUTER_API_KEY".to_string(),
                     max_tokens: 500,
                     temperature: 0.3,
@@ -592,6 +595,7 @@ impl ConfigManager {
             (Some(old_llm), Some(new_llm)) => {
                 compare_field!(old_llm.provider, new_llm.provider, "nlu.llm.provider");
                 compare_field!(old_llm.model, new_llm.model, "nlu.llm.model");
+                compare_field!(old_llm.api_key, new_llm.api_key, "nlu.llm.api_key");
                 compare_field!(
                     old_llm.api_key_env,
                     new_llm.api_key_env,

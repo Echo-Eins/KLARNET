@@ -272,11 +272,16 @@ start http://localhost:3000
     - `models/whisper-medium` (или другой выбранный вариант Whisper);
     - `models/silero/v4_ru.pt` для TTS Silero.
 3. Убедитесь, что в каталоге `scripts/` присутствует `silero_tts.py` и вспомогательные тесты (`scripts/test_silero_tts.py`).
-4. Задайте переменные окружения с ключами API перед запуском, например:
+   4. Задайте переменные окружения с ключами API перед запуском, например:
 
-   ```powershell
-   setx OPENROUTER_API_KEY ""
-   ```
+      ```powershell
+      setx OPENROUTER_API_KEY ""
+      ```
+   Если вы храните ключ прямо в `config/klarnet.toml` в поле `api_key`, эту
+   переменную можно не задавать. Абсолютный путь к конфигу можно передать через
+   флаг `--config` (например, `klarnet.exe --config D:\\Configs\\klarnet.toml`)
+   или переменную окружения `KLARNET_CONFIG`, что удобно при запуске из другой
+   директории.
 
 5. Выполните финальный прогон тестов (`cargo test --all-features`), убедившись, что интеграционный тест `tts_engine_speak` завершился успешно.
 
@@ -512,10 +517,16 @@ confidence_threshold = 0.7
 [nlu.llm]
 provider = "openrouter"        # openrouter, deepseek, openai
 model = "deepseek/deepseek-chat"
+api_key = "sk-xxxxx"            # Можно задать ключ прямо здесь
 api_key_env = "OPENROUTER_API_KEY"
 max_tokens = 500
 temperature = 0.3
 timeout_s = 5
+
+> ℹ️ Теперь можно хранить ключ прямо в конфиге через поле `api_key`. Если оно
+> пустое, приложение обратится к переменной окружения, указанной в
+> `api_key_env`. Это позволяет выбрать удобный для вас способ хранения без
+> изменения кода.
 
 [actions]
 enabled_modules = ["system", "smart_home", "web", "custom"]
@@ -549,7 +560,7 @@ export_interval_s = 10
 
 ```env
 # API ключи
-OPENROUTER_API_KEY=sk-or-v1-xxxxx
+# OPENROUTER_API_KEY=sk-or-v1-xxxxx  # Можно не задавать, если используете `api_key` в конфиге
 DEEPSEEK_API_KEY=sk-xxxxx
 OPENAI_API_KEY=sk-xxxxx
 
@@ -557,7 +568,7 @@ OPENAI_API_KEY=sk-xxxxx
 HASS_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.xxxxx
 
 # Пути (опционально)
-KLARNET_CONFIG=C:\Users\YourName\KLARNET\config\klarnet.toml
+# KLARNET_CONFIG=C:\Users\YourName\KLARNET\config\klarnet.toml
 KLARNET_MODELS=C:\Users\YourName\KLARNET\models
 
 # Отладка

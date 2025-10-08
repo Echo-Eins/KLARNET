@@ -6,6 +6,7 @@ use serde_json::json;
 use std::time::Duration;
 
 use crate::{LlmConfig, NluProcessor};
+use llm_connector::resolve_api_key;
 use klarnet_core::{CommandType, Intent, KlarnetError, KlarnetResult, NluResult};
 use tracing::warn;
 
@@ -53,8 +54,7 @@ Common intents: lights_control, open_app, set_timer, weather, music_play, smart_
             .as_ref()
             .ok_or_else(|| KlarnetError::Nlu("LLM config not provided".to_string()))?;
 
-        let api_key = std::env::var(&config.api_key_env)
-            .map_err(|_| KlarnetError::Nlu(format!("API key not found: {}", config.api_key_env)))?;
+        let api_key = resolve_api_key(config)?;
 
         let endpoint = config
             .base_url

@@ -68,6 +68,8 @@ pub struct FallbackConfig {
 pub struct LlmModeConfig {
     #[serde(default = "default_llm_provider")]
     pub provider: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
     pub api_key_env: String,
     pub model: String,
     #[serde(default)]
@@ -119,6 +121,7 @@ impl Default for LlmModeConfig {
     fn default() -> Self {
         Self {
             provider: default_llm_provider(),
+            api_key: None,
             api_key_env: "OPENROUTER_API_KEY".to_string(),
             model: "x-ai/grok-4-fast:free".to_string(),
             base_url: None,
@@ -150,6 +153,7 @@ impl LlmModeConfig {
 
         Ok(ConnectorLlmConfig {
             provider,
+            api_key: self.api_key.clone(),
             model: self.model.clone(),
             api_key_env: self.api_key_env.clone(),
             base_url: self.base_url.clone(),

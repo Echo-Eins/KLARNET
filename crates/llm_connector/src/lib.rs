@@ -26,6 +26,8 @@ use prompt_builder::PromptBuilder;
 pub struct LlmConfig {
     pub provider: LlmProviderKind,
     pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
     pub api_key_env: String,
     pub base_url: Option<String>,
     pub max_tokens: usize,
@@ -50,6 +52,7 @@ impl Default for LlmConfig {
         Self {
             provider: LlmProviderKind::OpenRouter,
             model: "x-ai/grok-4-fast:free".to_string(),
+            api_key: None,
             api_key_env: "OPENROUTER_API_KEY".to_string(),
             base_url: None,
             max_tokens: 500,
@@ -438,6 +441,32 @@ impl LlmConnector {
             usage: response.usage,
         })
     }
+}
+
+pub fn resolve_api_key(config: &LlmConfig) -> KlarnetResult<String> {
+    if let Some(value) = config
+        .api_key
+        .as_ref()
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+    {
+        return Ok(value.to_string());
+    }
+
+    let env_var = config.api_key_env.trim();
+    if env_var.is_empty() {
+        return Err(KlarnetError::Nlu(
+            "LLM API key is not configured. Provide `api_key` in the configuration file or set `api_key_env`."
+                .to_string(),
+        ));
+    }
+
+    std::env::var(env_var).map_err(|_| {
+        KlarnetError::Nlu(format!(
+            "API key not found in environment variable: {}",
+            env_var
+        ))
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

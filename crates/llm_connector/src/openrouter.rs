@@ -7,7 +7,11 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::debug;
 
-use crate::{CompletionRequest, CompletionResponse, FunctionCall, LlmConfig, LlmProvider, Usage};
+use crate::{
+    resolve_api_key, CompletionRequest, CompletionResponse, FunctionCall, LlmConfig, LlmProvider,
+    Usage,
+};
+
 pub struct OpenRouterProvider {
     config: LlmConfig,
     client: Client,
@@ -16,8 +20,7 @@ pub struct OpenRouterProvider {
 
 impl OpenRouterProvider {
     pub async fn new(config: LlmConfig) -> KlarnetResult<Self> {
-        let api_key = std::env::var(&config.api_key_env)
-            .map_err(|_| KlarnetError::Nlu(format!("API key not found: {}", config.api_key_env)))?;
+        let api_key = resolve_api_key(&config)?;
 
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_s))
