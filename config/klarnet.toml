@@ -37,6 +37,10 @@ num_workers = 1
 batch_size = 1
 max_segment_length = 30.0
 
+[stt.backend]
+type = "python"  # единственный поддерживаемый вариант (faster-whisper)
+script = "scripts/whisper_server.py"
+
 [nlu]
 mode = "hybrid"  # local | llm | hybrid
 wake_words = ["Кларнет", "ассистент", "компьютер"]

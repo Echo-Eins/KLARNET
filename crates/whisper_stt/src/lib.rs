@@ -91,7 +91,6 @@ impl Default for WhisperPythonConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WhisperBackendConfig {
     Python(WhisperPythonConfig),
-    Native,
 }
 
 impl Default for WhisperBackendConfig {
@@ -223,7 +222,6 @@ impl WhisperEngine {
             WhisperBackendConfig::Python(python) => {
                 Box::new(PythonWhisperProcess::new(python)) as BackendHandle
             }
-            WhisperBackendConfig::Native => Box::new(NativeWhisper::default()) as BackendHandle,
         };
 
         timeout(config.initialization_timeout(), backend.initialize(&config))
@@ -569,31 +567,6 @@ impl Drop for PythonWhisperProcess {
     }
 }
 
-#[derive(Default)]
-struct NativeWhisper;
-
-#[async_trait]
-impl WhisperBackend for NativeWhisper {
-    async fn initialize(&mut self, _config: &WhisperConfig) -> KlarnetResult<()> {
-        Err(KlarnetError::Stt(
-            "Native Whisper backend is not implemented".to_string(),
-        ))
-    }
-
-    async fn transcribe(
-        &mut self,
-        _chunk: &AudioChunk,
-        _pcm: &[f32],
-        _config: &WhisperConfig,
-    ) -> KlarnetResult<WhisperResponse> {
-        Err(KlarnetError::Stt(
-            "Native Whisper backend is not implemented".to_string(),
-        ))
-    }
-
-    fn shutdown(&mut self) {}
-}
-
 #[derive(Debug, Deserialize)]
 struct WhisperResponse {
     #[serde(default)]
@@ -646,6 +619,8 @@ impl WhisperWord {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -653,7 +628,86 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use klarnet_core::{AudioConfig, AudioFrame};
+    use tempfile::tempdir;
     use tokio::sync::Mutex;
+
+    const PYTHON_TEST_TRANSCRIPT: &str = "привет от python";
+    const PYTHON_BACKEND_TEMPLATE: &str = r#"
+import argparse
+import json
+import struct
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--model-path")
+parser.add_argument("--language")
+parser.add_argument("--compute-type")
+parser.add_argument("--device")
+parser.parse_args()
+
+
+def read_exact(count):
+    data = b""
+    while len(data) < count:
+        chunk = sys.stdin.buffer.read(count - len(data))
+        if not chunk:
+            return None
+        data += chunk
+    return data
+
+
+while True:
+    header = read_exact(4)
+    if header is None:
+        break
+    (samples,) = struct.unpack("<I", header)
+    payload = read_exact(samples * 4)
+    if payload is None:
+        break
+    response = {
+        "language": "ru",
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 0.5,
+                "text": "__TEXT__",
+                "confidence": 0.9,
+                "words": [
+                    {
+                        "word": "__TEXT__",
+                        "start": 0.0,
+                        "end": 0.5,
+                        "confidence": 0.9
+                    }
+                ]
+            }
+        ]
+    }
+    print(json.dumps(response), flush=True)
+"#;
+
+    fn write_dummy_python_backend_script(dir: &tempfile::TempDir) -> PathBuf {
+        let script_path = dir.path().join("dummy_whisper.py");
+        let script_source = PYTHON_BACKEND_TEMPLATE.replace("__TEXT__", PYTHON_TEST_TRANSCRIPT);
+
+        fs::write(&script_path, script_source).expect("write dummy whisper backend script");
+        script_path
+    }
+
+    fn python_backend_config() -> (WhisperConfig, tempfile::TempDir) {
+        let dir = tempdir().expect("temp dir");
+        let script_path = write_dummy_python_backend_script(&dir);
+
+        let mut backend = WhisperPythonConfig::default();
+        backend.script = script_path;
+
+        let mut config = WhisperConfig::default();
+        config.backend = WhisperBackendConfig::Python(backend);
+        config.request_timeout_ms = 5_000;
+        config.initialization_timeout_ms = 5_000;
+
+        (config, dir)
+    }
 
     #[derive(Clone)]
     struct MockProcess {
@@ -787,6 +841,39 @@ mod tests {
         };
 
         AudioChunk::new(vec![frame])
+    }
+
+    #[tokio::test]
+    async fn python_backend_initializes_with_dummy_script() {
+        let (config, _temp_dir) = python_backend_config();
+
+        {
+            let mut engine = WhisperEngine::new(config)
+                .await
+                .expect("python backend initializes");
+            engine.shutdown();
+        }
+    }
+
+    #[tokio::test]
+    async fn python_backend_transcribes_with_dummy_script() {
+        let (config, _temp_dir) = python_backend_config();
+
+        {
+            let mut engine = WhisperEngine::new(config).await.expect("engine init");
+
+            let chunk = make_chunk();
+            let transcript = engine
+                .transcribe(chunk.clone())
+                .await
+                .expect("transcription success");
+
+            assert_eq!(transcript.full_text, PYTHON_TEST_TRANSCRIPT);
+            assert_eq!(transcript.language, "ru");
+            assert_eq!(transcript.segments.len(), 1);
+
+            engine.shutdown();
+        }
     }
 
     #[tokio::test]
