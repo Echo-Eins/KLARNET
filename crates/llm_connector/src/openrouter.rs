@@ -61,7 +61,6 @@ impl LlmProvider for OpenRouterProvider {
             payload["functions"] = json!(functions);
         }
 
-
         debug!("Sending request to OpenRouter");
         let response = self
             .client
@@ -112,7 +111,6 @@ impl LlmProvider for OpenRouterProvider {
                 .unwrap_or_default()
                 .to_string(),
         });
-
 
         let usage = Usage {
             prompt_tokens: json

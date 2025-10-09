@@ -296,7 +296,6 @@ impl LlmConnector {
     }
 
     fn generate_cache_key(&self, request: &CompletionRequest) -> String {
-
         let mut hasher = DefaultHasher::new();
         format!("{:?}", request).hash(&mut hasher);
         format!("llm:{}", hasher.finish())

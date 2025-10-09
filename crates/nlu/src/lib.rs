@@ -219,7 +219,6 @@ fn default_llm_min_request_interval_ms() -> u64 {
     0
 }
 
-
 pub struct NluEngine {
     config: NluConfig,
     wake_words_lower: Vec<String>,
@@ -314,7 +313,7 @@ impl NluEngine {
                     original_command_trimmed,
                     offset,
                 )
-                    .await
+                .await
             }
             NluMode::Llm => {
                 self.process_llm(
@@ -323,7 +322,7 @@ impl NluEngine {
                     normalized_command_trimmed,
                     original_command_trimmed,
                 )
-                    .await
+                .await
             }
             NluMode::Hybrid => {
                 self.process_hybrid(
@@ -333,7 +332,7 @@ impl NluEngine {
                     original_command_trimmed,
                     offset,
                 )
-                    .await
+                .await
             }
         }
     }
@@ -1105,15 +1104,15 @@ mod tests {
                     }
                 ]
             })
-                .to_string(),
+            .to_string(),
         )
-            .unwrap();
+        .unwrap();
 
         fs::write(
             &entities_path,
             serde_json::json!({"entities": {}}).to_string(),
         )
-            .unwrap();
+        .unwrap();
 
         let mut config = NluConfig::default();
         config.mode = NluMode::Local;

@@ -293,7 +293,7 @@ impl SileroProcess {
             Duration::from_millis(200),
             self.stderr.read_to_string(&mut stderr),
         )
-            .await;
+        .await;
         if stderr.trim().is_empty() {
             KlarnetError::Action(context.to_string())
         } else {

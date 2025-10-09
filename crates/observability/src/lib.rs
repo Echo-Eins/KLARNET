@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::info;
 
-pub mod tracing_config;
-pub mod metrics;
 pub mod health;
+pub mod metrics;
+pub mod tracing_config;
 
 use metrics::{MetricType, Metrics};
 
@@ -92,6 +92,14 @@ impl MetricsCollector {
     }
 
     pub fn get_prometheus_metrics(&self) -> String {
+        if !self.config.metrics_enabled {
+            return "# Metrics collection disabled\n".to_string();
+        }
+
+        if self.exporter.is_none() {
+            return "# Prometheus exporter unavailable\n".to_string();
+        }
+
         let encoder = TextEncoder::new();
         let metric_families = prometheus::gather();
         let mut buffer = vec![];

@@ -1,11 +1,12 @@
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use audio_ingest::AudioIngest;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
+use klarnet_buffering::{BufferConfig as SegmentBufferConfig, CompletedSegment, SegmentCollector};
+use klarnet_config::KlarnetConfig;
 use klarnet_core::{
-    AudioChunk, AudioConfig, AudioFrame, CommandType, NluResult, Transcript, TranscriptSegment,
+    AudioConfig, AudioFrame, CommandType, NluResult, Transcript, TranscriptSegment,
     VadEvent, WordInfo,
 };
 use nlu::{NluConfig, NluEngine};
@@ -70,6 +71,27 @@ impl Default for PipelineConfig {
             vad: VadConfig::default(),
             stt: WhisperConfig::default(),
             nlu: NluConfig::default(),
+            simulation: SimulationConfig::default(),
+        }
+    }
+}
+
+impl PipelineConfig {
+    pub fn from_runtime(config: &KlarnetConfig) -> Self {
+        let mut nlu = config.nlu.clone();
+        if nlu.wake_words.is_empty() {
+            nlu.wake_words.push(default_wake_word());
+        }
+        Self {
+            wake_word: nlu
+                .wake_words
+                .first()
+                .cloned()
+                .unwrap_or_else(default_wake_word),
+            pre_roll_ms: config.app.pre_roll_ms,
+            vad: config.vad.clone(),
+            stt: config.stt.clone(),
+            nlu,
             simulation: SimulationConfig::default(),
         }
     }
@@ -291,7 +313,7 @@ async fn run_realtime_pipeline(
                     &stt_tx,
                     &nlu_tx,
                 )
-                    .await
+                .await
                 {
                     SessionOutcome::Shutdown => {
                         components.shutdown().await;
@@ -322,158 +344,6 @@ async fn run_realtime_pipeline(
     info!("Realtime audio pipeline terminated");
 }
 
-struct CompletedChunk {
-    chunk: AudioChunk,
-    overflowed: bool,
-}
-
-struct SegmentCollector {
-    collecting: bool,
-    pre_roll_frames: VecDeque<AudioFrame>,
-    pre_roll_total: Duration,
-    max_pre_roll: Duration,
-    active_frames: Vec<AudioFrame>,
-    active_duration: Duration,
-    max_chunk_duration: Duration,
-    sample_rate: u32,
-}
-
-impl SegmentCollector {
-    fn new(sample_rate: u32, pre_roll_ms: u64, max_chunk_ms: u64) -> Self {
-        let pre_roll_duration = Duration::from_millis(pre_roll_ms);
-        let mut effective_max = max_chunk_ms.max(pre_roll_ms);
-        if effective_max == 0 {
-            effective_max = 1000;
-        }
-        let max_chunk_duration = Duration::from_millis(effective_max);
-
-        let frame_capacity = ((sample_rate as u64 * pre_roll_ms) / 1000).max(1) as usize;
-        let pre_roll_frames = VecDeque::with_capacity(frame_capacity);
-
-        Self {
-            collecting: false,
-            pre_roll_frames,
-            pre_roll_total: Duration::from_millis(0),
-            max_pre_roll: pre_roll_duration,
-            active_frames: Vec::new(),
-            active_duration: Duration::from_millis(0),
-            max_chunk_duration,
-            sample_rate,
-        }
-    }
-
-    fn observe_frame(&mut self, frame: &AudioFrame) {
-        if self.collecting {
-            return;
-        }
-
-        self.pre_roll_frames.push_back(frame.clone());
-        self.pre_roll_total += frame.duration;
-
-        while self.pre_roll_total > self.max_pre_roll {
-            if let Some(oldest) = self.pre_roll_frames.pop_front() {
-                self.pre_roll_total = self.pre_roll_total.saturating_sub(oldest.duration);
-            } else {
-                self.pre_roll_total = Duration::from_millis(0);
-                break;
-            }
-        }
-    }
-
-    fn start(&mut self) {
-        if self.collecting {
-            return;
-        }
-        self.collecting = true;
-        self.active_frames.clear();
-        self.active_duration = Duration::from_millis(0);
-
-        for frame in self.pre_roll_frames.drain(..) {
-            self.active_duration += frame.duration;
-            self.active_frames.push(frame);
-        }
-
-        self.pre_roll_total = Duration::from_millis(0);
-    }
-
-    fn push_speech_frame(&mut self, frame: AudioFrame) -> Vec<CompletedChunk> {
-        if !self.collecting {
-            self.start();
-        }
-
-        self.active_duration += frame.duration;
-        self.active_frames.push(frame);
-
-        if self.active_duration >= self.max_chunk_duration {
-            vec![self.complete_current(true)]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn push_pcm_frame(&mut self, timestamp: DateTime<Utc>, pcm: Vec<f32>) -> Vec<CompletedChunk> {
-        let frame = self.make_frame(timestamp, pcm);
-        self.push_speech_frame(frame)
-    }
-
-    fn finish(&mut self) -> Option<CompletedChunk> {
-        if !self.collecting {
-            return None;
-        }
-
-        self.collecting = false;
-        if self.active_frames.is_empty() {
-            self.reset();
-            return None;
-        }
-
-        let chunk = self.complete_current(false);
-        self.reset();
-        Some(chunk)
-    }
-
-    fn on_silence(&mut self) {
-        if self.collecting {
-            return;
-        }
-        self.pre_roll_frames.clear();
-        self.pre_roll_total = Duration::from_millis(0);
-    }
-
-    fn complete_current(&mut self, overflowed: bool) -> CompletedChunk {
-        let frames = std::mem::take(&mut self.active_frames);
-        self.active_duration = Duration::from_millis(0);
-
-        CompletedChunk {
-            chunk: AudioChunk::new(frames),
-            overflowed,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.collecting = false;
-        self.active_frames.clear();
-        self.active_duration = Duration::from_millis(0);
-        self.pre_roll_frames.clear();
-        self.pre_roll_total = Duration::from_millis(0);
-    }
-
-    fn make_frame(&self, timestamp: DateTime<Utc>, pcm: Vec<f32>) -> AudioFrame {
-        let duration = if pcm.is_empty() {
-            Duration::from_millis(0)
-        } else {
-            Duration::from_secs_f32(pcm.len() as f32 / self.sample_rate as f32)
-        };
-
-        AudioFrame {
-            data: Arc::from(pcm.into_boxed_slice()),
-            timestamp,
-            duration,
-            sample_rate: self.sample_rate,
-        }
-    }
-}
-
 struct PipelineComponents {
     audio_ingest: AudioIngest,
     audio_rx: mpsc::UnboundedReceiver<AudioFrame>,
@@ -493,7 +363,7 @@ impl PipelineComponents {
             audio_config.clone(),
             Duration::from_millis(config.pre_roll_ms),
         )
-            .map_err(|err| format!("audio ingest init failed: {err}"))?;
+        .map_err(|err| format!("audio ingest init failed: {err}"))?;
 
         let audio_rx = audio_ingest
             .start()
@@ -531,11 +401,11 @@ impl PipelineComponents {
             );
         }
 
-        let collector = SegmentCollector::new(
+        let collector = SegmentCollector::new(SegmentBufferConfig::new(
             audio_config.sample_rate,
             config.pre_roll_ms,
             MAX_SEGMENT_DURATION_MS,
-        );
+        ));
 
         Ok(Self {
             audio_ingest,
@@ -569,7 +439,6 @@ async fn run_pipeline_session(
     stt_tx: &mpsc::UnboundedSender<Transcript>,
     nlu_tx: &mpsc::UnboundedSender<NluResult>,
 ) -> SessionOutcome {
-
     loop {
         tokio::select! {
             control = control_rx.recv() => {
@@ -607,7 +476,7 @@ async fn run_pipeline_session(
                         components.collector.start();
                     }
                     VadEvent::SpeechFrame { timestamp, pcm, .. } => {
-                        chunks.extend(components.collector.push_pcm_frame(timestamp, pcm));
+                        chunks.extend(components.collector.push_pcm(timestamp, pcm));
                     }
                     VadEvent::SpeechEnd { timestamp, duration } => {
                         debug!(?timestamp, ?duration, "Speech end detected");
@@ -646,14 +515,14 @@ async fn run_pipeline_session(
 }
 
 async fn process_audio_chunk(
-    completed: CompletedChunk,
+    completed: CompletedSegment,
     metrics: &Arc<Mutex<PipelineMetrics>>,
     stt_engine: &mut WhisperEngine,
     nlu_engine: &NluEngine,
     stt_tx: &mpsc::UnboundedSender<Transcript>,
     nlu_tx: &mpsc::UnboundedSender<NluResult>,
 ) -> Result<(), String> {
-    let CompletedChunk { chunk, overflowed } = completed;
+    let CompletedSegment { chunk, overflowed } = completed;
     if chunk.frames.is_empty() {
         return Ok(());
     }
@@ -885,9 +754,9 @@ async fn wait_for_shutdown(mut control_rx: mpsc::Receiver<ControlMessage>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::timeout;
     use chrono::Utc;
     use std::sync::Arc;
+    use tokio::time::timeout;
 
     #[tokio::test]
     async fn simulated_pipeline_emits_results() {
@@ -925,14 +794,15 @@ mod tests {
     #[test]
     fn segment_collector_preserves_pre_roll() {
         let sample_rate = 16_000;
-        let mut collector = SegmentCollector::new(sample_rate, 200, 1_000);
+        let mut collector =
+            SegmentCollector::new(SegmentBufferConfig::new(sample_rate, 200, 1_000));
 
         let pre_roll_frame = build_audio_frame(20, sample_rate);
         collector.observe_frame(&pre_roll_frame);
         collector.start();
 
         let speech_ts = Utc::now();
-        let speech_chunks = collector.push_pcm_frame(speech_ts, vec![1.0; 320]);
+        let speech_chunks = collector.push_pcm(speech_ts, vec![1.0; 320]);
         assert!(speech_chunks.is_empty());
 
         let finished = collector.finish().expect("chunk produced");
@@ -943,13 +813,13 @@ mod tests {
     #[test]
     fn segment_collector_splits_on_overflow() {
         let sample_rate = 16_000;
-        let mut collector = SegmentCollector::new(sample_rate, 0, 30);
+        let mut collector = SegmentCollector::new(SegmentBufferConfig::new(sample_rate, 0, 30));
         collector.start();
 
         let ts = Utc::now();
-        assert!(collector.push_pcm_frame(ts, vec![0.2; 320]).is_empty());
+        assert!(collector.push_pcm(ts, vec![0.2; 320]).is_empty());
 
-        let overflow = collector.push_pcm_frame(ts, vec![0.2; 320]);
+        let overflow = collector.push_pcm(ts, vec![0.2; 320]);
         assert_eq!(overflow.len(), 1);
         assert!(overflow[0].overflowed);
         assert!(overflow[0].chunk.frames.len() >= 2);

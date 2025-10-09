@@ -1,154 +1,105 @@
-// crates/api/src/websocket.rs
+use std::sync::Arc;
+use std::time::Duration;
 
-pub async fn handle_stt_stream(socket: WebSocket, handlers: Arc<ApiHandlers>) {
-    let session_id = {
-        let mut sessions = handlers.active_sessions.write();
-        sessions.create_session()
-    };
+use axum::extract::ws::{Message, WebSocket};
+use futures::StreamExt;
+use serde_json::json;
+use tokio::time::Instant;
+use tracing::{error, info};
 
-    info!("WebSocket STT session started: {}", session_id);
+use crate::handlers::{build_chunk_from_pcm, decode_pcm_s16le, ApiHandlers};
 
-    let (mut sender, mut receiver) = socket.split();
+const SAMPLE_RATE: u32 = 16_000;
 
-    // Send welcome message
-    let welcome = json!({
-        "type": "welcome",
-        "session_id": session_id,
-        "sample_rate": 16000,
-        "format": "pcm_f32",
-    });
+pub async fn handle_stt_stream(mut socket: WebSocket, handlers: Arc<ApiHandlers>) {
+    let session_id = handlers.create_session();
 
-    if sender.send(Message::Text(welcome.to_string())).await.is_err() {
+    info!(%session_id, "Starting STT WebSocket session");
+
+    if socket
+        .send(Message::Text(
+            json!({
+                "type": "welcome",
+                "session_id": session_id,
+                "sample_rate": SAMPLE_RATE,
+                "format": "pcm_s16le"
+            })
+            .to_string(),
+        ))
+        .await
+        .is_err()
+    {
         return;
     }
 
-    // Process incoming audio
-    while let Some(msg) = receiver.next().await {
-        match msg {
-            Ok(Message::Binary(data)) => {
-                if let Err(e) = process_audio_chunk(&handlers, &session_id, data, &mut sender).await {
-                    error!("Error processing audio chunk: {}", e);
-                    break;
+    while let Some(message) = socket.next().await {
+        match message {
+            Ok(Message::Binary(data)) => match decode_pcm_s16le(&data) {
+                Ok(samples) => {
+                    if let Some(chunk_pcm) = handlers.append_session_audio(&session_id, &samples) {
+                        if let Some(whisper) = handlers.whisper_engine() {
+                            let started = Instant::now();
+                            let chunk = build_chunk_from_pcm(&chunk_pcm, SAMPLE_RATE);
+                            let mut engine = whisper.lock().await;
+                            match engine.transcribe(chunk).await {
+                                Ok(transcript) => {
+                                    let response = json!({
+                                        "type": "transcript",
+                                        "text": transcript.full_text,
+                                        "latency_ms": started.elapsed().as_millis() as u64,
+                                    });
+                                    if socket
+                                        .send(Message::Text(response.to_string()))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Err(err) => {
+                                    error!(%session_id, "Streaming transcription failed: {err}");
+                                    let payload = json!({
+                                        "type": "error",
+                                        "message": err.to_string(),
+                                    });
+                                    let _ = socket.send(Message::Text(payload.to_string())).await;
+                                }
+                            }
+                        }
+                    }
                 }
-            }
+                Err(err) => {
+                    error!(%session_id, "Failed to decode audio payload: {err}");
+                    let payload = json!({"type": "error", "message": err.to_string()});
+                    if socket
+                        .send(Message::Text(payload.to_string()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            },
             Ok(Message::Text(text)) => {
-                if let Err(e) = handle_control_message(&text, &mut sender).await {
-                    error!("Error handling control message: {}", e);
-                    break;
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if value["type"] == "ping" {
+                        let payload = json!({"type": "pong"});
+                        let _ = socket.send(Message::Text(payload.to_string())).await;
+                    }
                 }
             }
             Ok(Message::Close(_)) => {
-                info!("WebSocket closed by client");
+                info!(%session_id, "WebSocket client closed session");
                 break;
             }
-            Err(e) => {
-                error!("WebSocket error: {}", e);
+            Err(err) => {
+                error!(%session_id, "WebSocket error: {err}");
                 break;
             }
             _ => {}
         }
     }
 
-    info!("WebSocket STT session ended: {}", session_id);
-}
-
-async fn process_audio_chunk(
-    handlers: &Arc<ApiHandlers>,
-    session_id: &uuid::Uuid,
-    data: Vec<u8>,
-    sender: &mut futures::stream::SplitSink<WebSocket, Message>,
-) -> KlarnetResult<()> {
-    // Add audio to session buffer
-    let should_process = {
-        let mut sessions = handlers.active_sessions.write();
-        if let Some(session) = sessions.get_session_mut(session_id) {
-            // Convert bytes to f32 samples
-            let samples: Vec<f32> = data.chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                .collect();
-
-            session.audio_buffer.extend(&samples);
-
-            // Process if we have enough data (e.g., 2 seconds)
-            session.audio_buffer.len() >= 32000
-        } else {
-            return Err(klarnet_core::KlarnetError::Unknown("Session not found".to_string()));
-        }
-    };
-
-    if should_process {
-        let audio_data = {
-            let mut sessions = handlers.active_sessions.write();
-            if let Some(session) = sessions.get_session_mut(session_id) {
-                let data = session.audio_buffer.clone();
-                session.audio_buffer.clear();
-                data
-            } else {
-                return Ok(());
-            }
-        };
-
-        // Transcribe audio
-        if let Some(whisper) = &handlers.whisper {
-            let chunk = AudioChunk::from_pcm(&audio_data, 16000);
-
-            match whisper.transcribe(chunk).await {
-                Ok(transcript) => {
-                    let response = json!({
-                        "type": "transcript",
-                        "text": transcript.full_text,
-                        "segments": transcript.segments,
-                        "is_final": false,
-                    });
-
-                    if let Err(e) = sender.send(Message::Text(response.to_string())).await {
-                        error!("Failed to send WebSocket message: {}", e);
-                        break;
-                    }
-                }
-                Err(e) => {
-                    let error_response = json!({
-                        "type": "error",
-                        "message": e.to_string(),
-                    });
-
-                    let _ = sender.send(Message::Text(error_response.to_string())).await;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn handle_control_message(
-    text: &str,
-    sender: &mut futures::stream::SplitSink<WebSocket, Message>,
-) -> KlarnetResult<()> {
-    let msg: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| klarnet_core::KlarnetError::Serialization(e))?;
-
-    match msg["type"].as_str() {
-        Some("ping") => {
-            let pong = json!({
-                "type": "pong",
-                "timestamp": chrono::Utc::now(),
-            });
-            sender.send(Message::Text(pong.to_string())).await
-                .map_err(|e| klarnet_core::KlarnetError::Network(e.to_string()))?;
-        }
-        Some("end_stream") => {
-            let response = json!({
-                "type": "stream_ended",
-                "timestamp": chrono::Utc::now(),
-            });
-            sender.send(Message::Text(response.to_string())).await
-                .map_err(|e| klarnet_core::KlarnetError::Network(e.to_string()))?;
-        }
-        _ => {
-            debug!("Unknown control message type: {:?}", msg["type"]);
-        }
-    }
-
-    Ok(())
+    handlers.cleanup_sessions(Duration::from_secs(300));
+    info!(%session_id, "STT WebSocket session terminated");
 }

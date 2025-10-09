@@ -38,9 +38,9 @@ pub fn prepare_audio_devices(config: &mut AppConfig) -> Result<()> {
             if let Some(choice) = prompt_for_device(
                 "ввода",
                 &input_devices,
-                config.audio.input_device.as_deref(),
+                config.audio().input_device.as_deref(),
             )? {
-                config.audio.input_device = Some(choice);
+                config.audio_mut().input_device = Some(choice);
             }
         } else {
             warn!("CPAL did not report any input devices");
@@ -48,13 +48,13 @@ pub fn prepare_audio_devices(config: &mut AppConfig) -> Result<()> {
 
         if !output_devices.is_empty() {
             let current = config
-                .tts
+                .tts()
                 .device
                 .as_deref()
-                .or(config.audio.output_device.as_deref());
+                .or(config.audio().output_device.as_deref());
             if let Some(choice) = prompt_for_device("вывода", &output_devices, current)? {
-                config.tts.device = Some(choice.clone());
-                config.audio.output_device = Some(choice);
+                config.tts_mut().device = Some(choice.clone());
+                config.audio_mut().output_device = Some(choice);
             }
         } else {
             warn!("CPAL did not report any output devices");

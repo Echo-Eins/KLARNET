@@ -1,36 +1,42 @@
-// crates/api/src/grpc.rs
+use std::net::SocketAddr;
+use std::sync::Arc;
 
+use futures::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status};
+use tracing::info;
+
+use crate::handlers::{build_chunk_from_pcm, decode_pcm_s16le, ApiHandlers};
 
 pub mod klarnet_proto {
     tonic::include_proto!("klarnet");
 }
 
-use klarnet_proto::{
-    stt_service_server::{SttService, SttServiceServer},
-    TranscribeRequest, TranscribeResponse,
-    StreamRequest, StreamResponse,
-};
+use klarnet_proto::stt_service_server::{SttService, SttServiceServer};
+use klarnet_proto::{StreamRequest, StreamResponse, TranscribeRequest, TranscribeResponse};
 
 pub struct GrpcService {
     handlers: Arc<ApiHandlers>,
+    sample_rate: u32,
 }
 
 impl GrpcService {
-    pub fn new(handlers: Arc<ApiHandlers>) -> Self {
-        Self { handlers }
+    pub fn new(handlers: Arc<ApiHandlers>, sample_rate: u32) -> Self {
+        Self {
+            handlers,
+            sample_rate,
+        }
     }
 
-    pub async fn serve(self, port: u16) -> Result<(), Box<dyn std::error::Error>> {
-        let addr = format!("0.0.0.0:{}", port).parse()?;
-
-        info!("gRPC server listening on {}", addr);
-
+    pub async fn serve(
+        self,
+        addr: SocketAddr,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!(%addr, "Starting gRPC STT service");
         Server::builder()
             .add_service(SttServiceServer::new(self))
             .serve(addr)
             .await?;
-
         Ok(())
     }
 }
@@ -42,81 +48,85 @@ impl SttService for GrpcService {
         request: Request<TranscribeRequest>,
     ) -> Result<Response<TranscribeResponse>, Status> {
         let req = request.into_inner();
+        let pcm = decode_pcm_s16le(&req.audio_data)
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+        let chunk = build_chunk_from_pcm(&pcm, self.sample_rate);
 
-        match self.handlers.transcribe_file(Bytes::from(req.audio_data)).await {
-            Ok(transcript) => {
-                let response = TranscribeResponse {
-                    text: transcript.full_text,
-                    language: transcript.language,
-                    confidence: 0.95,
-                };
+        let whisper = self
+            .handlers
+            .whisper_engine()
+            .ok_or_else(|| Status::unimplemented("Streaming STT is not configured"))?;
 
-                Ok(Response::new(response))
-            }
-            Err(e) => {
-                Err(Status::internal(format!("Transcription failed: {}", e)))
-            }
-        }
+        let mut engine = whisper.lock().await;
+        let transcript = engine
+            .transcribe(chunk)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(TranscribeResponse {
+            text: transcript.full_text,
+            language: transcript.language,
+            confidence: 0.95,
+        }))
     }
 
-    type StreamTranscribeStream = tokio_stream::wrappers::ReceiverStream<Result<StreamResponse, Status>>;
+    type StreamTranscribeStream = ReceiverStream<Result<StreamResponse, Status>>;
 
     async fn stream_transcribe(
         &self,
         request: Request<tonic::Streaming<StreamRequest>>,
     ) -> Result<Response<Self::StreamTranscribeStream>, Status> {
         let mut stream = request.into_inner();
-        let handlers = self.handlers.clone();
-
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let whisper = self
+            .handlers
+            .whisper_engine()
+            .ok_or_else(|| Status::unimplemented("Streaming STT is not configured"))?;
+        let sample_rate = self.sample_rate;
 
         tokio::spawn(async move {
-            let mut audio_buffer = Vec::new();
-
-            while let Some(result) = stream.next().await {
-                match result {
+            let mut buffer = Vec::new();
+            while let Some(message) = stream.next().await {
+                match message {
                     Ok(req) => {
-                        audio_buffer.extend_from_slice(&req.audio_chunk);
-
-                        // Process when we have enough data
-                        if audio_buffer.len() >= 32000 {
-                            let chunk_data = audio_buffer.clone();
-                            audio_buffer.clear();
-
-                            // Convert and transcribe
-                            let pcm: Vec<f32> = chunk_data.chunks_exact(2)
-                                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-                                .collect();
-
-                            if let Some(whisper) = &handlers.whisper {
-                                let chunk = AudioChunk::from_pcm(&pcm, 16000);
-
-                                match whisper.transcribe(chunk).await {
-                                    Ok(transcript) => {
-                                        let response = StreamResponse {
-                                            text: transcript.full_text,
-                                            is_final: false,
-                                        };
-
-                                        let _ = tx.send(Ok(response)).await;
+                        buffer.extend_from_slice(&req.audio_chunk);
+                        if buffer.len() >= 2 * crate::handlers::STREAM_CHUNK_SAMPLES {
+                            match decode_pcm_s16le(&buffer) {
+                                Ok(pcm) => {
+                                    buffer.clear();
+                                    let chunk = build_chunk_from_pcm(&pcm, sample_rate);
+                                    let mut engine = whisper.lock().await;
+                                    match engine.transcribe(chunk).await {
+                                        Ok(transcript) => {
+                                            let response = StreamResponse {
+                                                text: transcript.full_text,
+                                                is_final: false,
+                                            };
+                                            let _ = tx.send(Ok(response)).await;
+                                        }
+                                        Err(err) => {
+                                            let _ = tx
+                                                .send(Err(Status::internal(err.to_string())))
+                                                .await;
+                                        }
                                     }
-                                    Err(e) => {
-                                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                                    }
+                                }
+                                Err(err) => {
+                                    let _ = tx
+                                        .send(Err(Status::invalid_argument(err.to_string())))
+                                        .await;
                                 }
                             }
                         }
                     }
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
+                    Err(err) => {
+                        let _ = tx.send(Err(Status::from_error(Box::new(err)))).await;
                         break;
                     }
                 }
             }
         });
 
-        Ok(Response::new(
-            tokio_stream::wrappers::ReceiverStream::new(rx)
-        ))
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
