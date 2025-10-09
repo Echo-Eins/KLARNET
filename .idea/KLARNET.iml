@@ -19,6 +19,9 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/observability/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/tts/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/tts/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/api/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/buffering/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/config/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>

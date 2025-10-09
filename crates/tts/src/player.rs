@@ -573,12 +573,13 @@ impl RealAudioPlayer {
         }
         let state = self.supervisor.state();
         let soft_limit = self.supervisor.current_buffer_soft_limit();
+        let samples_len = samples.len();
         let overflow;
         {
             let mut buffer = state.buffer.lock().expect("player buffer mutex poisoned");
-            let new_len = buffer.len() + samples.len();
+            let new_len = buffer.len() + samples_len;
             overflow = new_len.saturating_sub(soft_limit);
-            buffer.extend(samples.into_iter());
+            buffer.extend(samples);
         }
 
         if overflow > 0 {
@@ -588,7 +589,7 @@ impl RealAudioPlayer {
 
         state
             .pending_samples
-            .fetch_add(samples.len(), Ordering::SeqCst);
+            .fetch_add(samples_len, Ordering::SeqCst);
 
         Ok(())
     }
@@ -1310,7 +1311,7 @@ mod hardware_tests {
     fn clamp_to_i16_limits_range() {
         assert_eq!(clamp_to_i16(2.0), i16::MAX);
         assert_eq!(clamp_to_i16(-2.0), i16::MIN);
-        assert_eq!(report.current_volume, 1.0);
+        assert_eq!(clamp_to_i16(0.0), 0);
     }
 
     #[tokio::test]
