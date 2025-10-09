@@ -1,143 +1,125 @@
-// crates/nlu/src/llm
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-use reqwest::Client;
-use serde_json::json;
-use std::time::Duration;
+use llm_connector::{LlmConnector, LlmMetricsSnapshot, LlmProviderKind, Usage};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 
-use crate::{LlmConfig, NluProcessor};
-use llm_connector::resolve_api_key;
-use klarnet_core::{CommandType, Intent, KlarnetError, KlarnetResult, NluResult};
-use tracing::warn;
+use crate::LlmModeConfig;
 
-pub struct LlmProcessor {
-    config: Option<LlmConfig>,
-    client: Client,
-    system_prompt: String,
+/// Runtime helper that encapsulates concurrency and usage tracking for LLM calls.
+pub(crate) struct LlmRuntime {
+    pub(crate) connector: Arc<LlmConnector>,
+    semaphore: Arc<Semaphore>,
+    min_interval: Option<Duration>,
+    last_call: AsyncMutex<Option<Instant>>,
+    last_usage: AsyncMutex<Option<LlmUsageRecord>>,
+    config: LlmModeConfig,
 }
 
-impl LlmProcessor {
-    pub async fn new(config: Option<LlmConfig>) -> KlarnetResult<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(
-                config.as_ref().map(|c| c.timeout_s).unwrap_or(5),
-            ))
-            .build()
-            .map_err(|e| KlarnetError::Nlu(e.to_string()))?;
-
-        let system_prompt = r#"
-You are a voice assistant NLU processor. Extract intent and entities from user commands.
-Respond in JSON format:
-{
-    "intent": "intent_name",
-    "confidence": 0.0-1.0,
-    "entities": {
-        "entity_name": "value"
-    },
-    "action": "action_to_execute",
-    "response": "optional response text"
-}
-Common intents: lights_control, open_app, set_timer, weather, music_play, smart_home, system_control
-"#
-        .to_string();
-
-        Ok(Self {
+impl LlmRuntime {
+    pub(crate) fn new(
+        connector: Arc<LlmConnector>,
+        semaphore: Arc<Semaphore>,
+        min_interval: Option<Duration>,
+        config: LlmModeConfig,
+    ) -> Self {
+        Self {
+            connector,
+            semaphore,
+            min_interval,
+            last_call: AsyncMutex::new(None),
+            last_usage: AsyncMutex::new(None),
             config,
-            client,
-            system_prompt,
-        })
+        }
     }
 
-    async fn call_llm(&self, text: &str) -> KlarnetResult<serde_json::Value> {
-        let config = self
-            .config
-            .as_ref()
-            .ok_or_else(|| KlarnetError::Nlu("LLM config not provided".to_string()))?;
-
-        let api_key = resolve_api_key(config)?;
-
-        let endpoint = config
-            .base_url
-            .as_ref()
-            .map(|base| format!("{}/chat/completions", base.trim_end_matches('/')))
-            .unwrap_or_else(|| "https://openrouter.ai/api/v1/chat/completions".to_string());
-
-        let response = self
-            .client
-            .post(&endpoint)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("HTTP-Referer", "https://github.com/klarnet")
-            .json(&json!({
-                "model": config.model,
-                "messages": [
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": text}
-                ],
-                "max_tokens": config.max_tokens,
-                "temperature": config.temperature,
-            }))
-            .send()
+    pub(crate) async fn acquire(&self) -> OwnedSemaphorePermit {
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
             .await
-            .map_err(|e| KlarnetError::Nlu(format!("LLM request failed: {}", e)))?;
+            .expect("LLM semaphore closed");
 
-        if !response.status().is_success() {
-            return Err(KlarnetError::Nlu(format!(
-                "LLM error: {}",
-                response.status()
-            )));
+        if let Some(interval) = self.min_interval {
+            let mut last_call = self.last_call.lock().await;
+            if let Some(last) = *last_call {
+                let elapsed = last.elapsed();
+                if elapsed < interval {
+                    tokio::time::sleep(interval - elapsed).await;
+                }
+            }
+            *last_call = Some(Instant::now());
         }
 
-        let json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| KlarnetError::Nlu(format!("Failed to parse LLM response: {}", e)))?;
+        permit
+    }
 
-        let content = json["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| KlarnetError::Nlu("Invalid LLM response format".to_string()))?;
+    pub(crate) async fn record_usage(&self, usage: Usage, latency: Duration) {
+        let config = self.connector.config();
+        let provider = match &config.provider {
+            LlmProviderKind::OpenRouter => "openrouter".to_string(),
+            LlmProviderKind::DeepSeek => "deepseek".to_string(),
+            LlmProviderKind::OpenAI => "openai".to_string(),
+            LlmProviderKind::Custom(name) => name.clone(),
+        };
 
-        serde_json::from_str(content)
-            .map_err(|e| KlarnetError::Nlu(format!("Failed to parse LLM JSON: {}", e)))
+        let mut guard = self.last_usage.lock().await;
+        *guard = Some(LlmUsageRecord {
+            usage,
+            latency,
+            provider,
+            model: config.model.clone(),
+        });
     }
 }
 
-#[async_trait]
-impl NluProcessor for LlmProcessor {
-    async fn process(&self, text: &str) -> KlarnetResult<NluResult> {
-        match self.call_llm(text).await {
-            Ok(json) => {
-                let intent = Intent {
-                    name: json["intent"].as_str().unwrap_or("unknown").to_string(),
-                    confidence: json["confidence"].as_f64().unwrap_or(0.5) as f32,
-                    entities: Vec::new(), // Parse from json["entities"] if needed
-                };
+pub(crate) async fn take_usage(&self) -> Option<LlmUsageRecord> {
+    let mut guard = self.last_usage.lock().await;
+    guard.take()
+}
 
-                let command_type = if let Some(action) = json["action"].as_str() {
-                    CommandType::LlmRequired(action.to_string())
-                } else {
-                    CommandType::Unknown
-                };
+pub(crate) fn metrics_snapshot(&self) -> LlmMetricsSnapshot {
+    self.connector.metrics_snapshot()
+}
 
-                Ok(NluResult {
-                    transcript: text.to_string(),
-                    intent: Some(intent),
-                    wake_word_detected: false,
-                    command_type,
-                })
-            }
-            Err(e) => {
-                warn!("LLM processing failed: {}", e);
-                Ok(NluResult {
-                    transcript: text.to_string(),
-                    intent: None,
-                    wake_word_detected: false,
-                    command_type: CommandType::Unknown,
-                })
-            }
+pub(crate) fn summary(&self) -> LlmConfigurationSummary {
+    LlmConfigurationSummary {
+        provider: self.config.provider.clone(),
+        model: self.config.model.clone(),
+        cache_enabled: self.config.cache_enabled,
+        max_concurrent_requests: self.config.max_concurrent_requests,
+        min_request_interval_ms: self.config.min_request_interval_ms,
         }
     }
+}
 
-    fn name(&self) -> &str {
-        "LlmProcessor"
-    }
+#[derive(Debug, Clone)]
+pub struct LlmUsageRecord {
+    pub usage: Usage,
+    pub latency: Duration,
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmConfigurationSummary {
+    pub provider: String,
+    pub model: String,
+    pub cache_enabled: bool,
+    pub max_concurrent_requests: usize,
+    pub min_request_interval_ms: u64,
+}
+
+#[derive(Debug)]
+pub struct LlmInterpretation {
+    pub intent_name: Option<String>,
+    pub confidence: f32,
+    pub parameters: serde_json::Map<String, serde_json::Value>,
+    pub entities: Vec<klarnet_core::Entity>,
+    pub action: Option<String>,
+    pub route: Option<String>,
+    pub response_text: Option<String>,
+    pub function_name: Option<String>,
+    pub usage: Usage,
 }

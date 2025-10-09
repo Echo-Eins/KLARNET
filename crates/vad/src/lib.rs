@@ -1,12 +1,19 @@
 use std::collections::VecDeque;
 use std::time::Duration as StdDuration;
 
+mod energy;
+mod hybrid;
+mod webrtc;
+
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 
 use klarnet_core::{AudioFrame, KlarnetResult, VadEvent};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
+
+use energy::{frame_energy, update_noise_floor};
+use hybrid::Thresholds;
 
 const EPSILON: f32 = 1e-6;
 
@@ -177,6 +184,8 @@ impl VadProcessor {
     pub fn new(config: VadConfig) -> KlarnetResult<(Self, mpsc::UnboundedReceiver<VadEvent>)> {
         let (tx, rx) = mpsc::unbounded_channel();
         let state = VadState::new(&config);
+        use hybrid::Thresholds;
+
         let processor = Self {
             config,
             tx,
@@ -190,26 +199,23 @@ impl VadProcessor {
         self.metrics.frames_processed += 1;
 
         let pcm: Vec<f32> = frame.data.iter().copied().collect();
-        let energy = if pcm.is_empty() {
-            0.0
-        } else {
-            pcm.iter().map(|sample| sample * sample).sum::<f32>() / pcm.len() as f32
-        };
+        let energy = frame_energy(&pcm);
 
         self.state.current_energy = energy;
         let timestamp = frame.timestamp;
         let duration = frame.duration;
 
         if !self.state.in_speech {
-            self.state.noise_floor = (1.0 - self.config.noise_update_rate) * self.state.noise_floor
-                + self.config.noise_update_rate * energy;
-            self.state.noise_floor = self.state.noise_floor.max(EPSILON);
+            self.state.noise_floor = update_noise_floor(
+                self.state.noise_floor,
+                energy,
+                self.config.noise_update_rate,
+            );
         }
 
-        let speech_threshold = (self.state.noise_floor + self.config.energy_threshold)
-            .max(self.config.energy_threshold);
-        let release_threshold =
-            (speech_threshold * (1.0 - self.config.hysteresis_ratio)).max(self.state.noise_floor);
+        let thresholds = Thresholds::new(self.state.noise_floor, &self.config);
+        let speech_threshold = webrtc::tune_speech_threshold(thresholds.speech);
+        let release_threshold = webrtc::tune_release_threshold(thresholds.release);
 
         let mut classify_as_speech = false;
         if energy >= speech_threshold {

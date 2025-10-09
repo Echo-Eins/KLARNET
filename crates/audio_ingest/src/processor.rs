@@ -1,5 +1,5 @@
 use klarnet_core::{AudioConfig, KlarnetResult};
-
+#[derive(Debug, Clone)]
 pub struct AudioProcessor {
     config: AudioConfig,
 }
@@ -9,7 +9,7 @@ impl AudioProcessor {
         Self { config }
     }
 
-    pub fn process(&mut self, input: &[f32]) -> KlarnetResult<Vec<f32>> {
+    pub fn process(&self, input: &[f32]) -> KlarnetResult<Vec<f32>> {
         if self.config.channels > 1 {
             Ok(self.to_mono(input, self.config.channels as usize))
         } else {
@@ -21,11 +21,8 @@ impl AudioProcessor {
         let frames = input.len() / channels;
         let mut mono = Vec::with_capacity(frames);
 
-        for i in 0..frames {
-            let mut sum = 0.0;
-            for c in 0..channels {
-                sum += input[i * channels + c];
-            }
+        for frame in input.chunks_exact(channels) {
+            let sum: f32 = frame.iter().sum();
             mono.push(sum / channels as f32);
         }
 

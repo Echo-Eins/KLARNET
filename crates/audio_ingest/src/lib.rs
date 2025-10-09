@@ -1,4 +1,6 @@
 use std::time::Duration;
+mod processor;
+mod resampler;
 mod source;
 
 use klarnet_core::{AudioConfig, AudioFrame, KlarnetError, KlarnetResult};
@@ -11,6 +13,8 @@ use tracing::{error, info, warn};
 #[cfg(feature = "hardware")]
 use crate::source::MicrophoneSource;
 use crate::source::{AudioSource, StubSource};
+use processor::AudioProcessor;
+use resampler::Resampler;
 
 pub struct AudioIngest {
     config: AudioConfig,
@@ -21,12 +25,16 @@ pub struct AudioIngest {
     worker: Option<JoinHandle<()>>,
     stop_signal: Option<oneshot::Sender<()>>,
     tx: Option<mpsc::UnboundedSender<AudioFrame>>,
+    processor: Arc<AudioProcessor>,
+    resampler: Arc<Resampler>,
 }
 
 impl AudioIngest {
     pub fn new(config: AudioConfig, pre_roll_duration: Duration) -> KlarnetResult<Self> {
         let source = Self::select_source()?;
         let pre_roll_capacity = Self::calculate_pre_roll_capacity(&config, pre_roll_duration);
+        let processor = Arc::new(AudioProcessor::new(config.clone()));
+        let resampler = Arc::new(Resampler::new(config.sample_rate));
         Ok(Self {
             config,
             pre_roll_duration,
@@ -36,6 +44,8 @@ impl AudioIngest {
             worker: None,
             stop_signal: None,
             tx: None,
+            processor,
+            resampler,
         })
     }
 
@@ -55,6 +65,8 @@ impl AudioIngest {
         self.stop_signal = Some(stop_tx);
         let pre_roll_buffer = Arc::clone(&self.pre_roll_buffer);
         let pre_roll_capacity = self.pre_roll_capacity;
+        let processor = Arc::clone(&self.processor);
+        let resampler = Arc::clone(&self.resampler);
 
         if let Err(err) = self.source.start(internal_tx, self.config.clone()).await {
             self.tx.take();
@@ -66,6 +78,8 @@ impl AudioIngest {
             Self::run_worker(
                 internal_rx,
                 worker_tx,
+                processor,
+                resampler,
                 pre_roll_buffer,
                 pre_roll_capacity,
                 stop_rx,
@@ -148,6 +162,8 @@ impl AudioIngest {
     async fn run_worker(
         mut source_rx: mpsc::UnboundedReceiver<AudioFrame>,
         tx: mpsc::UnboundedSender<AudioFrame>,
+        processor: Arc<AudioProcessor>,
+        resampler: Arc<Resampler>,
         pre_roll: Arc<Mutex<VecDeque<f32>>>,
         capacity: usize,
         mut stop_rx: oneshot::Receiver<()>,
@@ -162,20 +178,23 @@ impl AudioIngest {
                 maybe_frame = source_rx.recv() => {
                     match maybe_frame {
                         Some(frame) => {
-                            {
+                            let processed = Self::process_frame(&processor, &resampler, frame);
+
+                            if let Some((frame, pcm)) = processed {
                                 if let Ok(mut buffer) = pre_roll.lock() {
-                                    for &sample in frame.data.iter() {
+                                    for sample in pcm.iter().copied() {
                                         if buffer.len() >= capacity {
                                             buffer.pop_front();
                                         }
                                         buffer.push_back(sample);
                                     }
                                 }
-                            }
-
                             if let Err(err) = tx.send(frame) {
-                                warn!("Audio frame receiver dropped: {err}");
-                                break;
+                                    warn!("Audio frame receiver dropped: {err}");
+                                    break;
+                                }
+                            } else {
+                                warn!("Dropping malformed audio frame from {source_name}");
                             }
                         }
                         None => {
@@ -186,5 +205,34 @@ impl AudioIngest {
                 }
             }
         }
+    }
+    fn process_frame(
+        processor: &AudioProcessor,
+        resampler: &Resampler,
+        frame: AudioFrame,
+    ) -> Option<(AudioFrame, Arc<[f32]>)> {
+        let pcm: Vec<f32> = frame.data.iter().copied().collect();
+        let resampled = resampler.resample(&pcm, frame.sample_rate);
+        let processed = match processor.process(&resampled) {
+            Ok(data) => data,
+            Err(err) => {
+                warn!("Audio processor error: {err}");
+                return None;
+            }
+        };
+        let normalized = processor.normalize(&processed);
+        let arc_data: Arc<[f32]> = Arc::from(normalized.into_boxed_slice());
+
+        let duration =
+            Duration::from_secs_f32(arc_data.len() as f32 / resampler.target_rate() as f32);
+
+        let frame = AudioFrame {
+            data: Arc::clone(&arc_data),
+            timestamp: frame.timestamp,
+            duration,
+            sample_rate: resampler.target_rate(),
+        };
+
+        Some((frame, arc_data))
     }
 }

@@ -461,12 +461,74 @@ pub fn resolve_api_key(config: &LlmConfig) -> KlarnetResult<String> {
         ));
     }
 
-    std::env::var(env_var).map_err(|_| {
-        KlarnetError::Nlu(format!(
-            "API key not found in environment variable: {}",
-            env_var
-        ))
-    })
+    let mut candidates = vec![env_var.to_string()];
+
+    // Provide backwards-compatible aliases for common provider environment variables.
+    match &config.provider {
+        LlmProviderKind::OpenRouter => {
+            for alias in ["OPEN_ROUTER_API_KEY", "OPEN_ROUTER_API", "OPENROUTER_API"] {
+                if !candidates.iter().any(|candidate| candidate == alias) {
+                    candidates.push(alias.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    for candidate in &candidates {
+        if let Ok(value) = std::env::var(candidate) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+
+    Err(KlarnetError::Nlu(format!(
+        "API key not found in environment variables: {}",
+        candidates.join(", ")
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_config() -> LlmConfig {
+        LlmConfig {
+            provider: LlmProviderKind::OpenRouter,
+            api_key: None,
+            api_key_env: "OPENROUTER_API_KEY".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolves_api_key_from_primary_env() {
+        let mut config = base_config();
+        config.api_key_env = "KLARNET_TEST_PRIMARY_KEY".to_string();
+        std::env::set_var(&config.api_key_env, "primary-value");
+
+        let key = resolve_api_key(&config).expect("failed to resolve primary env var");
+
+        assert_eq!(key, "primary-value");
+        std::env::remove_var(&config.api_key_env);
+    }
+
+    #[test]
+    fn resolves_api_key_from_openrouter_alias() {
+        let mut config = base_config();
+        config.api_key_env = "KLARNET_TEST_MISSING".to_string();
+        std::env::remove_var(&config.api_key_env);
+
+        std::env::set_var("OPEN_ROUTER_API", "alias-value");
+
+        let key = resolve_api_key(&config).expect("failed to resolve alias env var");
+
+        assert_eq!(key, "alias-value");
+
+        std::env::remove_var("OPEN_ROUTER_API");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
