@@ -1288,7 +1288,13 @@ fn resample_linear(channel: &[f32], input_rate: u32, output_rate: u32) -> Vec<f3
 }
 
 fn clamp_to_i16(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+    let clamped = sample.clamp(-1.0, 1.0);
+
+    if clamped >= 0.0 {
+        (clamped * i16::MAX as f32).round() as i16
+    } else {
+        (clamped * -(i16::MIN as f32)).round() as i16
+    }
 }
 
 #[cfg(all(test, feature = "hardware-audio"))]
