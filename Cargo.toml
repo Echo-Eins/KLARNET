@@ -24,6 +24,7 @@ build = "build.rs"
 [features]
 default = []
 grpc = []
+hardware = ["audio_ingest/hardware", "tts/hardware-audio", "cpal"]
 
 
 [workspace.package]
@@ -84,6 +85,7 @@ nlu = { path = "crates/nlu" }
 actions = { path = "crates/actions" }
 llm-connector = { path = "crates/llm_connector" }
 tts = { path = "crates/tts" }
+cpal = { version = "0.15", optional = true }
 
 [dev-dependencies]
 async-trait = "0.1"

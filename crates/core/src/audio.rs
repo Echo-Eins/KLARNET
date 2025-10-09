@@ -12,6 +12,10 @@ pub struct AudioConfig {
     pub channels: u16,
     pub bits_per_sample: u16,
     pub buffer_size: usize,
+    #[serde(default)]
+    pub input_device: Option<String>,
+    #[serde(default)]
+    pub output_device: Option<String>,
 }
 
 impl Default for AudioConfig {
@@ -21,6 +25,8 @@ impl Default for AudioConfig {
             channels: 1,
             bits_per_sample: 16,
             buffer_size: 1024,
+            input_device: None,
+            output_device: None,
         }
     }
 }

@@ -47,6 +47,10 @@ pub struct AudioConfig {
     pub bits_per_sample: u16,
     pub buffer_size: usize,
     pub device: Option<String>,
+    #[serde(default)]
+    pub input_device: Option<String>,
+    #[serde(default)]
+    pub output_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -11,6 +11,7 @@ use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app;
+mod device;
 mod commands;
 mod pipeline;
 
@@ -24,7 +25,9 @@ async fn main() -> Result<()> {
         env!("CARGO_PKG_VERSION")
     );
 
-    let config = load_config().await?;
+    let mut config = load_config().await?;
+    device::prepare_audio_devices(&mut config)?;
+
 
     let mut app = KlarnetApp::new(config).await?;
     app.run().await?;

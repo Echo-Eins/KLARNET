@@ -174,7 +174,23 @@ impl KlarnetApp {
         info!("Starting assistant '{}'.", self.config.assistant_name);
 
         self.pipeline.start().await.map_err(|err| anyhow!(err))?;
+
+        let stt_ready = self.pipeline.stt_channel_ready();
+        let nlu_ready = self.pipeline.nlu_channel_ready();
+        let llm_ready = self.llm_connector.is_some();
+
         self.spawn_event_handlers();
+
+        if let Some(tts) = self.tts_engine.clone() {
+            self.announce_startup(tts, stt_ready, nlu_ready, llm_ready)
+                .await;
+        } else {
+            info!(
+                stt_ready,
+                nlu_ready, llm_ready, "Startup announcement skipped because TTS is disabled"
+            );
+        }
+
 
         self.wait_for_shutdown().await?;
 
@@ -380,6 +396,30 @@ impl KlarnetApp {
         }
     }
 
+    async fn announce_startup(
+        &self,
+        tts: Arc<TtsEngine>,
+        stt_ready: bool,
+        nlu_ready: bool,
+        llm_ready: bool,
+    ) {
+        let retry_attempts = self.config.tts_retry_attempts;
+        info!(
+            stt_ready,
+            nlu_ready, llm_ready, "Announcing assistant readiness over TTS"
+        );
+
+        let mut parts = Vec::new();
+        parts.push(module_status_phrase("распознавание речи", stt_ready));
+        parts.push(module_status_phrase("обработка команд", nlu_ready));
+        parts.push(module_status_phrase("LLM коннектор", llm_ready));
+        parts.push("синтез речи активен".to_string());
+
+        let announcement = format!("Привет! {}. Готова к работе.", parts.join(", "));
+
+        speak_with_retry(tts, announcement, retry_attempts).await;
+    }
+
     async fn wait_for_shutdown(&self) -> Result<()> {
         info!("Waiting for shutdown signal (Ctrl+C)...");
         signal::ctrl_c().await?;
@@ -482,4 +522,12 @@ async fn speak_with_retry(engine: Arc<TtsEngine>, text: String, attempts: u32) {
     }
 
     error!("TTS playback failed after {retries} attempts");
+}
+
+fn module_status_phrase(name: &str, ready: bool) -> String {
+    if ready {
+        format!("{} активен", name)
+    } else {
+        format!("{} недоступен", name)
+    }
 }

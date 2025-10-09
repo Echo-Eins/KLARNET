@@ -244,6 +244,14 @@ impl AudioPipeline {
     pub fn take_nlu_receiver(&mut self) -> Option<mpsc::UnboundedReceiver<NluResult>> {
         self.nlu_rx.take()
     }
+
+    pub fn stt_channel_ready(&self) -> bool {
+        self.stt_rx.is_some()
+    }
+
+    pub fn nlu_channel_ready(&self) -> bool {
+        self.nlu_rx.is_some()
+    }
 }
 
 async fn run_realtime_pipeline(

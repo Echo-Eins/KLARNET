@@ -31,7 +31,7 @@ pub struct AudioIngest {
 
 impl AudioIngest {
     pub fn new(config: AudioConfig, pre_roll_duration: Duration) -> KlarnetResult<Self> {
-        let source = Self::select_source()?;
+        let source = Self::select_source(&config)?;
         let pre_roll_capacity = Self::calculate_pre_roll_capacity(&config, pre_roll_duration);
         let processor = Arc::new(AudioProcessor::new(config.clone()));
         let resampler = Arc::new(Resampler::new(config.sample_rate));
@@ -141,10 +141,10 @@ impl AudioIngest {
         samples.max(minimum)
     }
 
-    fn select_source() -> KlarnetResult<Box<dyn AudioSource>> {
+    fn select_source(config: &AudioConfig) -> KlarnetResult<Box<dyn AudioSource>> {
         #[cfg(feature = "hardware")]
         {
-            match MicrophoneSource::new() {
+            match MicrophoneSource::new(config.input_device.as_deref()) {
                 Ok(source) => {
                     info!("Hardware audio source initialised");
                     return Ok(Box::new(source));
@@ -154,6 +154,9 @@ impl AudioIngest {
                 }
             }
         }
+
+        #[cfg(not(feature = "hardware"))]
+        let _ = config;
 
         info!("Using stub audio source");
         Ok(Box::new(StubSource::new()))

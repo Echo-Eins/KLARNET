@@ -33,6 +33,7 @@ pub trait AudioSource: Send + Sync {
 pub struct MicrophoneSource {
     device: Option<Device>,
     stream: Mutex<Option<Stream>>,
+    selected_name: String,
 }
 
 #[cfg(feature = "hardware")]
@@ -43,17 +44,33 @@ unsafe impl Sync for MicrophoneSource {}
 
 #[cfg(feature = "hardware")]
 impl MicrophoneSource {
-    pub fn new() -> KlarnetResult<Self> {
+    pub fn new(preferred: Option<&str>) -> KlarnetResult<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| KlarnetError::Audio("No input device available".to_string()))?;
+        let mut device = preferred
+            .and_then(|name| find_input_device(&host, name))
+            .or_else(|| host.default_input_device());
 
-        info!("Using audio device: {}", device.name().unwrap_or_default());
+        let Some(device) = device else {
+            return Err(KlarnetError::Audio("No input device available".to_string()));
+        };
+
+        let name = device
+            .name()
+            .unwrap_or_else(|_| "Unnamed input device".to_string());
+
+        if let Some(target) = preferred {
+            info!(
+                "Selected audio input device '{}' (requested '{}')",
+                name, target
+            );
+        } else {
+            info!("Using default audio input device '{}'", name);
+        }
 
         Ok(Self {
             device: Some(device),
             stream: Mutex::new(None),
+            selected_name: name,
         })
     }
 
@@ -136,8 +153,27 @@ impl AudioSource for MicrophoneSource {
     }
 
     fn name(&self) -> &str {
-        "Microphone"
+        &self.selected_name
     }
+}
+
+#[cfg(feature = "hardware")]
+fn find_input_device(host: &cpal::Host, name: &str) -> Option<Device> {
+    let target = name.trim().to_ascii_lowercase();
+    if target.is_empty() {
+        return None;
+    }
+
+    if let Ok(devices) = host.input_devices() {
+        for device in devices {
+            if let Ok(current_name) = device.name() {
+                if current_name.to_ascii_lowercase() == target {
+                    return Some(device);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(not(feature = "hardware"))]
@@ -147,7 +183,7 @@ pub struct MicrophoneSource;
 #[cfg(not(feature = "hardware"))]
 #[allow(dead_code)]
 impl MicrophoneSource {
-    pub fn new() -> KlarnetResult<Self> {
+    pub fn new(_preferred: Option<&str>) -> KlarnetResult<Self> {
         Err(KlarnetError::Audio(
             "hardware audio capture not available in this build".to_string(),
         ))
