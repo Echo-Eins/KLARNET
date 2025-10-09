@@ -1,190 +1,179 @@
-// crates/buffering/src/lib.rs
-
-use klarnet_core::{AudioChunk, AudioFrame, KlarnetError, KlarnetResult};
-use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use std::time::Duration;
 
-pub mod ring_buffer;
-pub mod segment_manager;
-pub mod adaptive;
+use chrono::{DateTime, Utc};
+use klarnet_core::{AudioChunk, AudioFrame};
+use serde::{Deserialize, Serialize};
+use tracing::debug;
 
-use ring_buffer::RingBuffer;
-use segment_manager::SegmentManager;
-
-/// Audio buffering configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BufferConfig {
     pub sample_rate: u32,
-    pub chunk_duration_ms: usize,
-    pub max_chunk_duration_ms: usize,
-    pub pre_roll_duration_ms: usize,
-    pub post_roll_duration_ms: usize,
-    pub max_buffer_size_mb: usize,
-    pub adaptive_buffering: bool,
+    pub pre_roll_ms: u64,
+    pub max_chunk_ms: u64,
+}
+
+impl BufferConfig {
+    pub fn new(sample_rate: u32, pre_roll_ms: u64, max_chunk_ms: u64) -> Self {
+        Self {
+            sample_rate,
+            pre_roll_ms,
+            max_chunk_ms,
+        }
+    }
 }
 
 impl Default for BufferConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 16000,
-            chunk_duration_ms: 2000,
-            max_chunk_duration_ms: 10000,
-            pre_roll_duration_ms: 1000,
-            post_roll_duration_ms: 500,
-            max_buffer_size_mb: 100,
-            adaptive_buffering: true,
+            sample_rate: 16_000,
+            pre_roll_ms: 500,
+            max_chunk_ms: 12_000,
         }
     }
 }
 
-/// Audio buffer for managing speech segments
-pub struct AudioBuffer {
+#[derive(Debug, Clone)]
+pub struct CompletedSegment {
+    pub chunk: AudioChunk,
+    pub overflowed: bool,
+}
+
+pub struct SegmentCollector {
     config: BufferConfig,
-    ring_buffer: Arc<RwLock<RingBuffer<f32>>>,
-    segment_manager: SegmentManager,
-    pre_roll_buffer: Arc<RwLock<VecDeque<AudioFrame>>>,
-    current_segment: Arc<RwLock<Vec<AudioFrame>>>,
-    metrics: Arc<RwLock<BufferMetrics>>,
+    pre_roll_frames: VecDeque<AudioFrame>,
+    pre_roll_total: Duration,
+    active_frames: Vec<AudioFrame>,
+    active_duration: Duration,
+    max_chunk_duration: Duration,
+    collecting: bool,
 }
 
-#[derive(Debug, Default)]
-struct BufferMetrics {
-    total_frames_buffered: u64,
-    total_segments_created: u64,
-    current_buffer_size_bytes: usize,
-    peak_buffer_size_bytes: usize,
-    dropped_frames: u64,
-}
-
-impl AudioBuffer {
-    pub fn new(sample_rate: u32) -> Self {
-        let config = BufferConfig {
-            sample_rate,
-            ..Default::default()
-        };
-
-        Self::with_config(config)
-    }
-
-    pub fn with_config(config: BufferConfig) -> Self {
-        let max_samples = (config.max_buffer_size_mb * 1024 * 1024) / std::mem::size_of::<f32>();
-        let ring_buffer = Arc::new(RwLock::new(RingBuffer::new(max_samples)));
-        let segment_manager = SegmentManager::new(config.clone());
-        let pre_roll_capacity = (config.pre_roll_duration_ms as f32 / 1000.0 * config.sample_rate as f32) as usize;
+impl SegmentCollector {
+    pub fn new(config: BufferConfig) -> Self {
+        let max_chunk = Duration::from_millis(config.max_chunk_ms.max(config.pre_roll_ms));
+        let pre_roll_capacity =
+            ((config.sample_rate as u64 * config.pre_roll_ms) / 1000).max(1) as usize;
 
         Self {
             config,
-            ring_buffer,
-            segment_manager,
-            pre_roll_buffer: Arc::new(RwLock::new(VecDeque::with_capacity(pre_roll_capacity))),
-            current_segment: Arc::new(RwLock::new(Vec::new())),
-            metrics: Arc::new(RwLock::new(BufferMetrics::default())),
+            pre_roll_frames: VecDeque::with_capacity(pre_roll_capacity),
+            pre_roll_total: Duration::from_millis(0),
+            active_frames: Vec::new(),
+            active_duration: Duration::from_millis(0),
+            max_chunk_duration: max_chunk,
+            collecting: false,
         }
     }
 
-    /// Add audio frame to buffer
-    pub fn add_frame(&self, frame: AudioFrame) {
-        // Update metrics
-        {
-            let mut metrics = self.metrics.write();
-            metrics.total_frames_buffered += 1;
-            metrics.current_buffer_size_bytes += frame.data.len() * std::mem::size_of::<f32>();
-            metrics.peak_buffer_size_bytes = metrics.peak_buffer_size_bytes.max(metrics.current_buffer_size_bytes);
+    pub fn observe_frame(&mut self, frame: &AudioFrame) {
+        if self.collecting {
+            return;
         }
 
-        // Add to ring buffer
-        {
-            let mut buffer = self.ring_buffer.write();
-            for sample in frame.data.iter() {
-                buffer.push(*sample);
+        self.pre_roll_frames.push_back(frame.clone());
+        self.pre_roll_total += frame.duration;
+
+        while self.pre_roll_total > Duration::from_millis(self.config.pre_roll_ms) {
+            if let Some(oldest) = self.pre_roll_frames.pop_front() {
+                self.pre_roll_total = self.pre_roll_total.saturating_sub(oldest.duration);
+            } else {
+                self.pre_roll_total = Duration::from_millis(0);
+                break;
             }
-        }
-
-        // Update pre-roll buffer
-        {
-            let mut pre_roll = self.pre_roll_buffer.write();
-            pre_roll.push_back(frame.clone());
-
-            // Keep pre-roll buffer size limited
-            let max_pre_roll_frames = (self.config.pre_roll_duration_ms as f32 / 1000.0
-                * self.config.sample_rate as f32 / 1024.0) as usize;
-
-            while pre_roll.len() > max_pre_roll_frames {
-                pre_roll.pop_front();
-            }
-        }
-
-        // Add to current segment
-        {
-            let mut segment = self.current_segment.write();
-            segment.push(frame);
         }
     }
 
-    /// Start new segment
-    pub fn start_segment(&self) -> Vec<AudioFrame> {
-        debug!("Starting new audio segment");
+    pub fn start(&mut self) {
+        if self.collecting {
+            return;
+        }
+        self.collecting = true;
+        self.active_frames.clear();
+        self.active_duration = Duration::from_millis(0);
 
-        // Include pre-roll frames
-        let pre_roll_frames = {
-            let pre_roll = self.pre_roll_buffer.read();
-            pre_roll.iter().cloned().collect::<Vec<_>>()
+        for frame in self.pre_roll_frames.drain(..) {
+            self.active_duration += frame.duration;
+            self.active_frames.push(frame);
+        }
+        self.pre_roll_total = Duration::from_millis(0);
+    }
+
+    pub fn push_frame(&mut self, frame: AudioFrame) -> Vec<CompletedSegment> {
+        if !self.collecting {
+            self.start();
+        }
+
+        self.active_duration += frame.duration;
+        self.active_frames.push(frame);
+
+        if self.active_duration >= self.max_chunk_duration {
+            vec![self.finish_internal(true)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn push_pcm(&mut self, timestamp: DateTime<Utc>, pcm: Vec<f32>) -> Vec<CompletedSegment> {
+        let duration = if pcm.is_empty() {
+            Duration::from_millis(0)
+        } else {
+            Duration::from_secs_f32(pcm.len() as f32 / self.config.sample_rate as f32)
         };
 
-        // Clear current segment
-        {
-            let mut segment = self.current_segment.write();
-            segment.clear();
-            segment.extend(pre_roll_frames.clone());
-        }
-
-        pre_roll_frames
-    }
-
-    /// End current segment and return audio chunk
-    pub fn end_segment(&self) -> Option<AudioChunk> {
-        debug!("Ending audio segment");
-
-        let frames = {
-            let mut segment = self.current_segment.write();
-            if segment.is_empty() {
-                return None;
-            }
-            std::mem::take(&mut *segment)
+        let frame = AudioFrame {
+            data: Arc::from(pcm.into_boxed_slice()),
+            timestamp,
+            duration,
+            sample_rate: self.config.sample_rate,
         };
 
-        // Update metrics
-        {
-            let mut metrics = self.metrics.write();
-            metrics.total_segments_created += 1;
+        self.push_frame(frame)
+    }
+
+    pub fn on_silence(&mut self) {
+        if self.collecting {
+            return;
+        }
+        self.pre_roll_frames.clear();
+        self.pre_roll_total = Duration::from_millis(0);
+    }
+
+    pub fn finish(&mut self) -> Option<CompletedSegment> {
+        if !self.collecting {
+            return None;
         }
 
-        Some(AudioChunk::new(frames))
+        self.collecting = false;
+        if self.active_frames.is_empty() {
+            self.reset();
+            return None;
+        }
+
+        let completed = self.finish_internal(false);
+        self.reset();
+        Some(completed)
     }
 
-    /// Get buffered audio as continuous PCM
-    pub fn get_buffered_pcm(&self, duration_ms: usize) -> Vec<f32> {
-        let samples_needed = (duration_ms as f32 / 1000.0 * self.config.sample_rate as f32) as usize;
-
-        let buffer = self.ring_buffer.read();
-        buffer.get_last_n(samples_needed)
+    pub fn reset(&mut self) {
+        self.collecting = false;
+        self.active_frames.clear();
+        self.active_duration = Duration::from_millis(0);
+        self.pre_roll_frames.clear();
+        self.pre_roll_total = Duration::from_millis(0);
     }
 
-    /// Clear all buffers
-    pub fn clear(&self) {
-        self.ring_buffer.write().clear();
-        self.pre_roll_buffer.write().clear();
-        self.current_segment.write().clear();
-
-        let mut metrics = self.metrics.write();
-        metrics.current_buffer_size_bytes = 0;
-    }
-
-    pub fn get_metrics(&self) -> BufferMetrics {
-        self.metrics.read().clone()
+    fn finish_internal(&mut self, overflowed: bool) -> CompletedSegment {
+        let frames = std::mem::take(&mut self.active_frames);
+        self.active_duration = Duration::from_millis(0);
+        debug!(
+            frame_count = frames.len(),
+            overflowed, "Completing buffered segment"
+        );
+        CompletedSegment {
+            chunk: AudioChunk::new(frames),
+            overflowed,
+        }
     }
 }

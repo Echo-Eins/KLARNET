@@ -480,7 +480,6 @@ struct RealAudioPlayer {
 #[cfg(feature = "hardware-audio")]
 impl RealAudioPlayer {
     fn new(preferred_device: Option<&str>) -> KlarnetResult<Self> {
-
         let state = Arc::new(PlayerState::new());
         let supervisor = StreamSupervisor::new(preferred_device, state)?;
         Ok(Self { supervisor })
@@ -492,7 +491,6 @@ impl RealAudioPlayer {
         input_channels: u16,
         input_sample_rate: u32,
     ) -> KlarnetResult<Vec<i16>> {
-
         let params = self.supervisor.current_params();
 
         prepare_samples_for_output(
@@ -687,7 +685,6 @@ impl PlayerState {
     fn volume(&self) -> f32 {
         f32::from_bits(self.volume.load(Ordering::SeqCst))
     }
-
 }
 
 #[cfg(feature = "hardware-audio")]
@@ -1035,7 +1032,6 @@ impl PlaybackMetrics {
         channels: u16,
         volume: f32,
     ) -> PlaybackReport {
-
         let samples_delta = self.total_samples.saturating_sub(previous.total_samples);
         let sum_squares_delta = (self.sum_squares - previous.sum_squares).max(0.0);
         let underruns = self.underruns.saturating_sub(previous.underruns);

@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use chrono::Utc;
 use klarnet_core::{AudioChunk, AudioFrame, KlarnetResult, Transcript};
+use std::sync::Arc;
 
 use crate::{WhisperConfig, WhisperEngine};
 const STREAM_SAMPLE_RATE: u32 = 16_000;

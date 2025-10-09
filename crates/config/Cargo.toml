@@ -1,21 +1,29 @@
 [package]
-name = "tts"
+name = "klarnet-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-async-trait = "0.1"
-tokio.workspace = true
+anyhow.workspace = true
+notify = "6.1"
+parking_lot = "0.12"
 serde.workspace = true
 serde_json.workspace = true
-parking_lot = "0.12"
+tokio = { workspace = true, features = ["sync", "fs", "rt"] }
 tracing.workspace = true
-uuid.workspace = true
-klarnet-core = { path = "../core" }
+toml.workspace = true
 thiserror.workspace = true
+klarnet-core = { path = "../core" }
+klarnet-observability = { path = "../observability" }
+actions = { path = "../actions" }
+nlu = { path = "../nlu" }
+vad = { path = "../vad" }
+whisper_stt = { path = "../whisper_stt" }
+tts = { path = "../tts" }
+klarnet-api = { path = "../api" }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "process"] }
 tempfile = "3.10"
+serde_json = { workspace = true, features = ["std"] }

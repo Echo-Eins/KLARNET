@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package klarnet;
+
+service SttService {
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+  rpc StreamTranscribe(stream StreamRequest) returns (stream StreamResponse);
+}
+
+message TranscribeRequest {
+  bytes audio_data = 1;
+  string language = 2;
+}
+
+message TranscribeResponse {
+  string text = 1;
+  string language = 2;
+  float confidence = 3;
+}
+
+message StreamRequest {
+  bytes audio_chunk = 1;
+  bool is_final = 2;
+}
+
+message StreamResponse {
+  string text = 1;
+  bool is_final = 2;
+}

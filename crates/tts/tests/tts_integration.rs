@@ -24,7 +24,7 @@ for line in sys.stdin:
     sys.stdout.flush()
 "#
     )
-        .unwrap();
+    .unwrap();
     script.flush().unwrap();
 
     let cache_dir = TempDir::new().unwrap();
@@ -62,7 +62,7 @@ sys.stderr.write("error\n")
 sys.exit(3)
 "#
     )
-        .unwrap();
+    .unwrap();
     binary.flush().unwrap();
     #[cfg(unix)]
     {
@@ -109,7 +109,7 @@ for line in sys.stdin:
     sys.stdout.flush()
 "#
     )
-        .unwrap();
+    .unwrap();
     script.flush().unwrap();
 
     let config = TtsConfig {

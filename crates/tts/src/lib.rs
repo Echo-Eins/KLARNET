@@ -212,7 +212,6 @@ impl TtsEngine {
     }
 
     fn build(config: TtsConfig, backend: Box<dyn TtsBackend>) -> KlarnetResult<Self> {
-
         if config.cache.enabled {
             if let Err(err) = std::fs::create_dir_all(&config.cache.directory) {
                 return Err(KlarnetError::Io(err));

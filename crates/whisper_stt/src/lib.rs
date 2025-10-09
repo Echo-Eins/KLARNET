@@ -77,7 +77,7 @@ impl WhisperEngine {
                 self.config.request_timeout(),
                 self.backend.transcribe(&chunk, &pcm, &self.config),
             )
-                .await;
+            .await;
 
             match response {
                 Ok(Ok(result)) => {

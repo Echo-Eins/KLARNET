@@ -8,6 +8,9 @@ members = [
     "crates/actions",
     "crates/tts",
     "crates/observability",
+    "crates/config",
+    "crates/api",
+    "crates/buffering",
 
 ]
 resolver = "2"
@@ -85,6 +88,10 @@ nlu = { path = "crates/nlu" }
 actions = { path = "crates/actions" }
 llm-connector = { path = "crates/llm_connector" }
 tts = { path = "crates/tts" }
+klarnet-config = { path = "crates/config" }
+klarnet-api = { path = "crates/api" }
+klarnet-buffering = { path = "crates/buffering" }
+klarnet-observability = { path = "crates/observability" }
 cpal = { version = "0.15", optional = true }
 
 [dev-dependencies]

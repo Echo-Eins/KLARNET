@@ -222,12 +222,12 @@ impl EntityTransform {
         Ok(())
     }
 
-fn from_str(value: &str) -> Option<Self> {
-    match value {
-        "int" => Some(EntityTransform::Int),
-        "float" => Some(EntityTransform::Float),
-        "lowercase" => Some(EntityTransform::Lowercase),
-        _ => None,
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "int" => Some(EntityTransform::Int),
+            "float" => Some(EntityTransform::Float),
+            "lowercase" => Some(EntityTransform::Lowercase),
+            _ => None,
         }
     }
 }

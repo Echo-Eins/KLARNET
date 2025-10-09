@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Duration;
 
 use llm_connector::{
@@ -8,38 +8,28 @@ use llm_connector::{
 
 use actions::{ActionExecutor, ActionsConfig};
 use anyhow::{anyhow, Result};
+use klarnet_api::{handlers::ApiHandlers, ApiServer};
+use klarnet_config::{ApiConfig as ApiRuntimeConfig, KlarnetConfig};
 use klarnet_core::{AudioConfig, CommandType};
+use klarnet_observability::{MetricsCollector, ObservabilityConfig};
+use nlu::NluEngine;
 use serde::{Deserialize, Serialize};
 use tokio::signal;
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tracing::{error, info, warn};
 use tts::{TtsConfig, TtsEngine};
+use whisper_stt::WhisperEngine;
 
 use crate::pipeline::{AudioPipeline, PipelineConfig};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    #[serde(default = "default_assistant_name")]
-    pub assistant_name: String,
-    #[serde(default)]
-    pub audio: AudioConfig,
-    #[serde(default)]
+    pub runtime: KlarnetConfig,
     pub pipeline: PipelineConfig,
-    #[serde(default)]
-    pub actions: ActionsConfig,
-    #[serde(default)]
     pub llm: LlmAppConfig,
-    #[serde(default = "default_tts_engine_config")]
-    pub tts: TtsConfig,
-    #[serde(default = "default_tts_retry_attempts")]
     pub tts_retry_attempts: u32,
-    #[serde(default = "default_shutdown_timeout_ms")]
     pub shutdown_timeout_ms: u64,
-}
-
-fn default_assistant_name() -> String {
-    "KLARNET".to_string()
 }
 
 fn default_shutdown_timeout_ms() -> u64 {
@@ -48,16 +38,50 @@ fn default_shutdown_timeout_ms() -> u64 {
 
 impl Default for AppConfig {
     fn default() -> Self {
+        let runtime = KlarnetConfig::default();
         Self {
-            assistant_name: default_assistant_name(),
-            audio: AudioConfig::default(),
-            pipeline: PipelineConfig::default(),
-            actions: ActionsConfig::default(),
+            pipeline: PipelineConfig::from_runtime(&runtime),
             llm: LlmAppConfig::default(),
-            tts: default_tts_engine_config(),
+            runtime,
             tts_retry_attempts: default_tts_retry_attempts(),
             shutdown_timeout_ms: default_shutdown_timeout_ms(),
         }
+    }
+}
+
+impl AppConfig {
+    pub fn assistant_name(&self) -> &str {
+        &self.runtime.app.assistant_name
+    }
+
+    pub fn audio(&self) -> &AudioConfig {
+        &self.runtime.audio
+    }
+
+    #[cfg(feature = "hardware")]
+    pub fn audio_mut(&mut self) -> &mut AudioConfig {
+        &mut self.runtime.audio
+    }
+
+    pub fn actions(&self) -> &ActionsConfig {
+        &self.runtime.actions
+    }
+
+    pub fn tts(&self) -> &TtsConfig {
+        &self.runtime.tts
+    }
+
+    #[cfg(feature = "hardware")]
+    pub fn tts_mut(&mut self) -> &mut TtsConfig {
+        &mut self.runtime.tts
+    }
+
+    pub fn api(&self) -> &ApiRuntimeConfig {
+        &self.runtime.api
+    }
+
+    pub fn observability(&self) -> &ObservabilityConfig {
+        &self.runtime.observability
     }
 }
 
@@ -86,12 +110,6 @@ impl Default for LlmAppConfig {
     }
 }
 
-fn default_tts_engine_config() -> TtsConfig {
-    let mut config = TtsConfig::default();
-    config.enabled = true;
-    config
-}
-
 fn default_tts_retry_attempts() -> u32 {
     3
 }
@@ -112,16 +130,47 @@ pub struct KlarnetApp {
     llm_connector: Option<Arc<LlmConnector>>,
     tts_engine: Option<Arc<TtsEngine>>,
     conversation_history: ConversationHistory,
+    api_handlers: Arc<ApiHandlers>,
+    api_task: Option<JoinHandle<()>>,
+    api_shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl KlarnetApp {
     pub async fn new(config: AppConfig) -> Result<Self> {
-        let pipeline = AudioPipeline::new(config.pipeline.clone(), config.audio.clone());
+        let pipeline = AudioPipeline::new(config.pipeline.clone(), config.audio().clone());
         let action_executor = Arc::new(
-            ActionExecutor::with_config(config.actions.clone())
+            ActionExecutor::with_config(config.actions().clone())
                 .await
                 .map_err(|err| anyhow!(err))?,
         );
+
+        let metrics = Arc::new(MetricsCollector::with_config(
+            config.observability().clone(),
+        ));
+
+        let api_handlers = if config.api().enabled {
+            match (
+                WhisperEngine::new(config.pipeline.stt.clone()).await,
+                NluEngine::new(config.pipeline.nlu.clone()).await,
+            ) {
+                (Ok(stt), Ok(nlu)) => Arc::new(ApiHandlers::with_engines(
+                    Arc::new(Mutex::new(stt)),
+                    Arc::new(nlu),
+                    metrics.clone(),
+                )),
+                (stt_result, nlu_result) => {
+                    if let Err(err) = stt_result {
+                        warn!("Failed to create API STT engine: {err}");
+                    }
+                    if let Err(err) = nlu_result {
+                        warn!("Failed to create API NLU engine: {err}");
+                    }
+                    Arc::new(ApiHandlers::new(metrics.clone()))
+                }
+            }
+        } else {
+            Arc::new(ApiHandlers::new(metrics.clone()))
+        };
 
         let llm_connector = if config.llm.enabled {
             info!(
@@ -142,9 +191,9 @@ impl KlarnetApp {
 
         let conversation_history = ConversationHistory::new(config.llm.max_history_messages);
 
-        let tts_engine = if config.tts.enabled {
-            info!(engine = ?config.tts.engine, "Initialising TTS engine");
-            match TtsEngine::new(config.tts.clone()).await {
+        let tts_engine = if config.tts().enabled {
+            info!(engine = ?config.tts().engine, "Initialising TTS engine");
+            match TtsEngine::new(config.tts().clone()).await {
                 Ok(engine) => {
                     info!("TTS engine initialised successfully");
                     Some(Arc::new(engine))
@@ -167,11 +216,16 @@ impl KlarnetApp {
             llm_connector,
             tts_engine,
             conversation_history,
+            api_handlers,
+            api_task: None,
+            api_shutdown: None,
         })
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        info!("Starting assistant '{}'.", self.config.assistant_name);
+        info!("Starting assistant '{}'.", self.config.assistant_name());
+
+        self.start_api_server().await?;
 
         self.pipeline.start().await.map_err(|err| anyhow!(err))?;
 
@@ -191,20 +245,20 @@ impl KlarnetApp {
             );
         }
 
-
         self.wait_for_shutdown().await?;
 
         let shutdown_result = self.shutdown_pipeline().await;
         self.await_event_tasks().await;
+        self.stop_api_server().await;
         shutdown_result?;
 
-        info!("Assistant '{}' stopped.", self.config.assistant_name);
+        info!("Assistant '{}' stopped.", self.config.assistant_name());
         Ok(())
     }
 
     fn spawn_event_handlers(&mut self) {
         if let Some(mut stt_rx) = self.pipeline.take_stt_receiver() {
-            let assistant = self.config.assistant_name.clone();
+            let assistant = self.config.assistant_name().to_string();
             let history = self.conversation_history.clone();
             let handle = tokio::spawn(async move {
                 while let Some(transcript) = stt_rx.recv().await {
@@ -222,7 +276,7 @@ impl KlarnetApp {
         }
 
         if let Some(mut nlu_rx) = self.pipeline.take_nlu_receiver() {
-            let assistant = self.config.assistant_name.clone();
+            let assistant = self.config.assistant_name().to_string();
             let executor = Arc::clone(&self.action_executor);
             let llm_connector = self.llm_connector.clone();
             let llm_settings = self.config.llm.clone();
@@ -264,7 +318,6 @@ impl KlarnetApp {
                                                     .await;
                                             }
                                         }
-
                                     } else {
                                         warn!(assistant = %assistant, action = %action_name, message = ?outcome.message, "Command reported failure");
 
@@ -293,7 +346,7 @@ impl KlarnetApp {
                                                 .to_string(),
                                             tts_retry_attempts,
                                         )
-                                            .await;
+                                        .await;
                                     }
                                 }
                             }
@@ -341,7 +394,7 @@ impl KlarnetApp {
                                                     answer.clone(),
                                                     tts_retry_attempts,
                                                 )
-                                                    .await;
+                                                .await;
                                             }
                                         }
                                     }
@@ -355,7 +408,7 @@ impl KlarnetApp {
                                                 fallback.clone(),
                                                 tts_retry_attempts,
                                             )
-                                                .await;
+                                            .await;
                                         }
                                     }
                                 }
@@ -437,6 +490,41 @@ impl KlarnetApp {
             Err(_) => {
                 error!("Pipeline stop timed out after {:?}", shutdown_timeout);
                 Err(anyhow!("graceful shutdown timed out"))
+            }
+        }
+    }
+
+    async fn start_api_server(&mut self) -> Result<()> {
+        if !self.config.api().enabled {
+            return Ok(());
+        }
+
+        let (tx, rx) = oneshot::channel();
+        let shutdown = async move {
+            let _ = rx.await;
+        };
+
+        let server = ApiServer::with_shared_handlers(
+            self.config.api().clone(),
+            self.api_handlers.clone(),
+            self.config.audio().sample_rate,
+        );
+
+        if let Some(handle) = server.serve(shutdown).await? {
+            self.api_task = Some(handle);
+            self.api_shutdown = Some(tx);
+        }
+
+        Ok(())
+    }
+
+    async fn stop_api_server(&mut self) {
+        if let Some(tx) = self.api_shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.api_task.take() {
+            if let Err(err) = handle.await {
+                warn!("API server task terminated: {err}");
             }
         }
     }

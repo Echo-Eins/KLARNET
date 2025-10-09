@@ -84,7 +84,8 @@ impl AudioIngest {
                 pre_roll_capacity,
                 stop_rx,
                 source_name,
-            ).await;
+            )
+            .await;
         });
 
         self.worker = Some(worker);

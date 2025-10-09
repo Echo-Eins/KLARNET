@@ -79,8 +79,8 @@ impl TtsBackend for PiperTts {
             stdin.flush().await.map_err(KlarnetError::Io)?;
             Ok::<(), KlarnetError>(())
         })
-            .await
-            .map_err(|_| KlarnetError::Action("Timed out while sending text to Piper".into()))??;
+        .await
+        .map_err(|_| KlarnetError::Action("Timed out while sending text to Piper".into()))??;
 
         drop(stdin);
 
