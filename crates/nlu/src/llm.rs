@@ -56,8 +56,8 @@ impl LlmRuntime {
     }
 
     pub(crate) async fn record_usage(&self, usage: Usage, latency: Duration) {
-        let config = self.connector.config();
-        let provider = match &config.provider {
+        let connector_config = self.connector.config();
+        let provider = match &connector_config.provider {
             LlmProviderKind::OpenRouter => "openrouter".to_string(),
             LlmProviderKind::DeepSeek => "deepseek".to_string(),
             LlmProviderKind::OpenAI => "openai".to_string(),
@@ -69,27 +69,24 @@ impl LlmRuntime {
             usage,
             latency,
             provider,
-            model: config.model.clone(),
+            model: connector_config.model.clone(),
         });
     }
-}
+    pub(crate) async fn take_usage(&self) -> Option<LlmUsageRecord> {
+        let mut guard = self.last_usage.lock().await;
+        guard.take()
+    }
+    pub(crate) fn metrics_snapshot(&self) -> LlmMetricsSnapshot {
+        self.connector.metrics_snapshot()
+    }
 
-pub(crate) async fn take_usage(&self) -> Option<LlmUsageRecord> {
-    let mut guard = self.last_usage.lock().await;
-    guard.take()
-}
-
-pub(crate) fn metrics_snapshot(&self) -> LlmMetricsSnapshot {
-    self.connector.metrics_snapshot()
-}
-
-pub(crate) fn summary(&self) -> LlmConfigurationSummary {
-    LlmConfigurationSummary {
-        provider: self.config.provider.clone(),
-        model: self.config.model.clone(),
-        cache_enabled: self.config.cache_enabled,
-        max_concurrent_requests: self.config.max_concurrent_requests,
-        min_request_interval_ms: self.config.min_request_interval_ms,
+    pub(crate) fn summary(&self) -> LlmConfigurationSummary {
+        LlmConfigurationSummary {
+            provider: self.config.provider.clone(),
+            model: self.config.model.clone(),
+            cache_enabled: self.config.cache_enabled,
+            max_concurrent_requests: self.config.max_concurrent_requests,
+            min_request_interval_ms: self.config.min_request_interval_ms,
         }
     }
 }
