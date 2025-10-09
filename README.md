@@ -539,7 +539,7 @@ api_token_env = "HASS_TOKEN"
 [tts]
 enabled = true
 engine = "silero"              # silero, piper, windows_sapi
-model = "v3_1_ru"
+model = "v4_ru"
 speaker = "xenia"              # xenia, baya, kseniya, eugene
 sample_rate = 48000
 speed = 1.0
@@ -555,6 +555,11 @@ enabled = true
 prometheus_port = 9090
 export_interval_s = 10
 ```
+
+> ⚠️ При разрешении путей до моделей Silero и Whisper приложение проверяет, что
+> найден ровно один артефакт. Если одинаковые модели лежат одновременно в
+> `models/…` и внутри `.venv`, запуск будет прерван с подсказкой выбрать
+> конкретный путь или удалить дубликаты.
 
 ### Переменные окружения `.env`
 

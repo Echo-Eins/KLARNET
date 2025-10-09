@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use klarnet_core::{KlarnetError, KlarnetResult};
+use klarnet_core::{resolve_python_path, KlarnetError, KlarnetResult};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -57,16 +57,23 @@ impl Default for TtsMonitoringConfig {
 /// Runtime configuration required by individual TTS engines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TtsRuntimeConfig {
+    #[serde(default = "TtsRuntimeConfig::default_python_path")]
     pub python_path: PathBuf,
     pub silero_script: PathBuf,
     pub piper_binary: PathBuf,
     pub request_timeout_ms: u64,
 }
 
+impl TtsRuntimeConfig {
+    fn default_python_path() -> PathBuf {
+        resolve_python_path()
+    }
+}
+
 impl Default for TtsRuntimeConfig {
     fn default() -> Self {
         Self {
-            python_path: PathBuf::from("python3"),
+            python_path: Self::default_python_path(),
             silero_script: PathBuf::from("scripts/silero_tts.py"),
             piper_binary: PathBuf::from("piper"),
             request_timeout_ms: 15_000,
@@ -96,7 +103,7 @@ impl Default for TtsConfig {
             enabled: true,
             engine: TtsEngineType::Silero,
             language: "ru".to_string(),
-            model: "v3_1_ru".to_string(),
+            model: "v4_ru".to_string(),
             speaker: "xenia".to_string(),
             sample_rate: 48_000,
             speed: 1.0,

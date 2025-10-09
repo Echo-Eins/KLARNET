@@ -1,12 +1,12 @@
 mod config;
 mod streaming;
-
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use klarnet_core::{
-    resolve_project_path, AudioChunk, KlarnetError, KlarnetResult, Transcript, TranscriptSegment,
-    WordInfo,
+    resolve_project_path, venv_site_packages_directories, AudioChunk, KlarnetError, KlarnetResult,
+    Transcript, TranscriptSegment, WordInfo,
 };
 use serde::Deserialize;
 use tokio::fs;
@@ -222,10 +222,10 @@ impl PythonWhisperProcess {
                 .map_err(|err| KlarnetError::Stt(err.to_string()))?;
         }
 
-        let model_path = resolve_project_path(&config.model.model_path);
+        let model_path = resolve_whisper_model_path(&config.model.model_path)?;
 
         debug!(
-            "Resolved project model path for faster-whisper backend: {}",
+            "Resolved Whisper model path for faster-whisper backend: {}",
             model_path.display(),
         );
 
@@ -299,6 +299,96 @@ impl PythonWhisperProcess {
 
         Ok(())
     }
+}
+
+fn resolve_whisper_model_path(spec: &Path) -> KlarnetResult<PathBuf> {
+    let mut candidates = Vec::new();
+    let resolved = resolve_project_path(spec);
+    if resolved.exists() {
+        candidates.push((resolved, "config"));
+    }
+
+    let mut search_names = Vec::new();
+    if let Some(file_name) = spec.file_name() {
+        search_names.push(PathBuf::from(file_name));
+    }
+
+    let models_dir = resolve_project_path("models");
+    if models_dir.is_dir() {
+        for name in &search_names {
+            let candidate = models_dir.join(name);
+            if candidate.exists() {
+                candidates.push((candidate, "models"));
+            }
+        }
+    }
+
+    for site_packages in venv_site_packages_directories() {
+        for name in &search_names {
+            let candidate = site_packages.join(name);
+            if candidate.exists() {
+                candidates.push((candidate, "venv"));
+            }
+        }
+    }
+
+    let mut unique = Vec::new();
+    for (path, source) in candidates {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if unique.iter().any(|(existing, _)| existing == &canonical) {
+            continue;
+        }
+        unique.push((canonical, (path, source)));
+    }
+
+    if unique.is_empty() {
+        let message = if let Some(name) = spec.file_name() {
+            format!(
+                "Unable to locate Whisper model directory '{}' in the project or virtual environment",
+                name.to_string_lossy()
+            )
+        } else {
+            format!(
+                "Unable to locate Whisper model directory at '{}'",
+                spec.display()
+            )
+        };
+        return Err(KlarnetError::Stt(message));
+    }
+
+    if unique.len() > 1 {
+        let details = unique
+            .iter()
+            .map(|(canonical, (original, source))| {
+                if canonical == original {
+                    format!("{} [{source}]", canonical.display())
+                } else {
+                    format!(
+                        "{} (canonical {}) [{source}]",
+                        original.display(),
+                        canonical.display()
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        return Err(KlarnetError::Stt(format!(
+            "Multiple Whisper models matching '{}' found: {}. Remove duplicates or set 'stt.model.model_path' to an explicit location.",
+            spec.display(),
+            details
+        )));
+    }
+
+    let (canonical, (original, _)) = unique.into_iter().next().unwrap();
+    if !canonical.is_dir() {
+        return Err(KlarnetError::Stt(format!(
+            "Resolved Whisper model path '{}' is not a directory",
+            original.display()
+        )));
+    }
+
+    Ok(canonical)
 }
 
 #[async_trait]

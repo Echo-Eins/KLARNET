@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 fn env_project_root() -> Option<PathBuf> {
@@ -128,4 +129,50 @@ pub fn resolve_project_path<P: AsRef<Path>>(path: P) -> PathBuf {
     }
 
     path.to_path_buf()
+}
+
+/// Return potential site-packages directories inside the project's virtual environment.
+///
+/// The lookup mirrors both Windows-style (`Lib/site-packages`) and Unix-style
+/// (`lib/python*/site-packages`) layouts. Non-existent directories are skipped
+/// silently and the resulting list may be empty when no virtual environment is
+/// detected.
+pub fn venv_site_packages_directories() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Some(root) = detect_project_root() {
+        let venv_root = root.join(".venv");
+        if !venv_root.is_dir() {
+            return dirs;
+        }
+
+        let windows_layout = venv_root.join("Lib").join("site-packages");
+        if windows_layout.is_dir() {
+            dirs.push(windows_layout);
+        }
+
+        let unix_lib = venv_root.join("lib");
+        if unix_lib.is_dir() {
+            if let Ok(entries) = fs::read_dir(&unix_lib) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| name.starts_with("python"))
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+
+                    let site_packages = path.join("site-packages");
+                    if site_packages.is_dir() {
+                        dirs.push(site_packages);
+                    }
+                }
+            }
+        }
+    }
+
+    dirs
 }
