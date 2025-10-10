@@ -25,9 +25,9 @@ repository.workspace = true
 build = "build.rs"
 
 [features]
-default = []
+default = ["hardware"]
 grpc = []
-hardware = ["audio_ingest/hardware", "tts/hardware-audio", "cpal"]
+hardware = ["cpal", "audio_ingest/hardware", "tts/hardware"]
 
 
 [workspace.package]

@@ -7,8 +7,9 @@ use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
 #[cfg(feature = "hardware")]
 use tracing::{info, warn};
+use cpal::traits::{DeviceTrait, HostTrait};
+#[cfg(feature = "hardware")]
 
-use tracing::debug;
 use crate::app::AppConfig;
 
 #[cfg(feature = "hardware")]
@@ -82,10 +83,19 @@ pub fn force_interactive_device_selection(config: &mut AppConfig) -> Result<()> 
 
         // Показываем текущие настройки
         println!("Текущие настройки:");
-        println!("  Устройство ввода: {}",
-                 config.audio().input_device.as_deref().unwrap_or("по умолчанию"));
-        println!("  Устройство вывода: {}\n",
-                 config.tts().device.as_deref().unwrap_or("по умолчанию"));
+
+        println!(
+            "  Устройство ввода: {}",
+            config
+                .audio()
+                .input_device
+                .as_deref()
+                .unwrap_or("по умолчанию")
+        );
+        println!(
+            "  Устройство вывода: {}\n",
+            config.tts().device.as_deref().unwrap_or("по умолчанию")
+        );
 
         // Выбор устройства ввода (микрофона)
         if !input_devices.is_empty() {
@@ -139,7 +149,10 @@ pub fn force_interactive_device_selection(config: &mut AppConfig) -> Result<()> 
             println!("  [0] Использовать системное устройство по умолчанию");
 
             loop {
-                print!("\nВыберите устройство вывода (0-{}): ", output_devices.len());
+                print!(
+                    "\nВыберите устройство вывода (0-{}): ",
+                    output_devices.len()
+                );
                 io::stdout().flush()?;
 
                 let mut buffer = String::new();
@@ -212,12 +225,11 @@ pub async fn test_audio_devices(config: &AppConfig) -> Result<()> {
         // Попробуем воспроизвести тестовый звук
         println!("Воспроизведение тестового сигнала (440 Гц)...");
 
-        use crate::app::AppConfig;
         use tts::player::AudioPlayer;
 
         match AudioPlayer::new(config.tts().device.as_deref()) {
             Ok(player) => {
-                match player.play_pcm(&test_sound, sample_rate) {
+                match player.play(&test_sound, sample_rate).await {
                     Ok(_) => {
                         println!("✓ Тестовый звук воспроизведён успешно");
                         println!("  Вы должны были услышать короткий тон.\n");

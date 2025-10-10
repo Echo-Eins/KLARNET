@@ -7,6 +7,7 @@ repository.workspace = true
 
 [features]
 default = []
+hardware = ["hardware-audio"]
 hardware-audio = ["cpal"]
 
 [dependencies]
