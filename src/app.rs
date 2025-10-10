@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
+use tts::{TtsConfig, TtsEngine, TtsEngineType};
 
 use llm_connector::{
     CompletionRequest, LlmConfig, LlmConnector, Message as LlmMessage, Role as LlmRole,
@@ -19,7 +20,6 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tracing::{error, info, warn};
-use tts::{TtsConfig, TtsEngine};
 use whisper_stt::WhisperEngine;
 
 use crate::pipeline::{AudioPipeline, PipelineConfig};
@@ -196,7 +196,11 @@ impl KlarnetApp {
             match TtsEngine::new(config.tts().clone()).await {
                 Ok(engine) => {
                     info!("TTS engine initialised successfully");
-                    Some(Arc::new(engine))
+                    let engine = Arc::new(engine);
+                    if matches!(config.tts().engine.clone(), TtsEngineType::Silero) {
+                        play_silero_startup_prompt(engine.clone()).await;
+                    }
+                    Some(engine)
                 }
                 Err(err) => {
                     error!("Failed to initialise TTS engine: {err}");
@@ -610,6 +614,14 @@ async fn speak_with_retry(engine: Arc<TtsEngine>, text: String, attempts: u32) {
     }
 
     error!("TTS playback failed after {retries} attempts");
+}
+
+async fn play_silero_startup_prompt(engine: Arc<TtsEngine>) {
+    let message = "Кларнет готов к работе";
+    info!("Playing Silero startup prompt");
+    if let Err(err) = engine.speak(message).await {
+        warn!("Failed to play Silero startup prompt: {err}");
+    }
 }
 
 fn module_status_phrase(name: &str, ready: bool) -> String {
