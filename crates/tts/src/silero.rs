@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use std::ffi::OsString;
 
 use async_trait::async_trait;
 use klarnet_core::{
@@ -24,134 +23,61 @@ use crate::{TtsBackend, TtsConfig};
 pub struct SileroTts {
     config: TtsConfig,
     script_path: PathBuf,
-    model_path: PathBuf,
+    model: String,
     process: Arc<Mutex<Option<SileroProcess>>>,
 }
 
-fn candidate_file_names(model: &str) -> Vec<OsString> {
-    let mut names = Vec::new();
-    let spec_path = PathBuf::from(model);
-
-    if let Some(file_name) = spec_path.file_name() {
-        names.push(file_name.to_os_string());
-    } else if !model.is_empty() {
-        names.push(OsString::from(model));
-    }
-
-    if !model.ends_with(".pt") {
-        if let Some(file_name) = spec_path.file_name() {
-            let mut with_ext = file_name.to_os_string();
-            with_ext.push(".pt");
-            if !names.contains(&with_ext) {
-                names.push(with_ext);
-            }
-        } else if !model.is_empty() {
-            let mut with_ext = OsString::from(model);
-            with_ext.push(".pt");
-            names.push(with_ext);
-        }
-    }
-
-    names
-}
-
-fn resolve_silero_model_path(model: &str) -> KlarnetResult<PathBuf> {
-    let trimmed = model.trim();
+fn resolve_model_path(model_spec: &str) -> Option<PathBuf> {
+    let trimmed = model_spec.trim();
     if trimmed.is_empty() {
-        return Err(KlarnetError::Action(
-            "Silero model identifier must not be empty".to_string(),
+        return None;
+    }
+
+    let spec_path = Path::new(trimmed);
+    let mut candidates = Vec::new();
+
+    let mut push_candidate = |candidate: PathBuf| {
+        if !candidates.iter().any(|existing| existing == &candidate) {
+            candidates.push(candidate);
+        }
+    };
+
+    if spec_path.is_absolute() {
+        push_candidate(spec_path.to_path_buf());
+    } else {
+        push_candidate(resolve_project_path(spec_path));
+        push_candidate(resolve_project_path(
+            Path::new("models/silero").join(spec_path),
         ));
     }
 
-    let search_names = candidate_file_names(trimmed);
-    let mut candidates = Vec::new();
-
-    let direct_path = resolve_project_path(trimmed);
-    if direct_path.exists() {
-        candidates.push((direct_path, "config"));
+    for site in venv_site_packages_directories() {
+        push_candidate(site.join("silero").join(spec_path));
     }
 
-    let models_dir = resolve_project_path("models/silero");
-    if models_dir.is_dir() {
-        for name in &search_names {
-            let candidate = models_dir.join(name);
-            if candidate.exists() {
-                candidates.push((candidate, "models/silero"));
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if candidate.extension().is_none() && !trimmed.ends_with(".pt") {
+            let mut with_ext = candidate.clone();
+            with_ext.set_extension("pt");
+            if with_ext.is_file() {
+                return Some(with_ext);
             }
         }
+
     }
-
-    for site_packages in venv_site_packages_directories() {
-        let silero_dir = site_packages.join("silero");
-        if !silero_dir.is_dir() {
-            continue;
-        }
-
-        for name in &search_names {
-            let candidate = silero_dir.join(name);
-            if candidate.exists() {
-                candidates.push((candidate, "venv"));
-            }
-        }
-    }
-
-    let mut unique = Vec::new();
-    for (path, source) in candidates {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if unique.iter().any(|(existing, _)| existing == &canonical) {
-            continue;
-        }
-        unique.push((canonical, (path, source)));
-    }
-
-    if unique.is_empty() {
-        let mut message = format!(
-            "Unable to locate Silero model '{}' in the project or virtual environment",
-            model
-        );
-        if models_dir.is_dir() {
-            message.push_str(&format!("; expected file inside {}", models_dir.display()));
-        }
-        return Err(KlarnetError::Action(message));
-    }
-
-    if unique.len() > 1 {
-        let details = unique
-            .iter()
-            .map(|(canonical, (original, source))| {
-                if canonical == original {
-                    format!("{} [{source}]", canonical.display())
-                } else {
-                    format!(
-                        "{} (canonical {}) [{source}]",
-                        original.display(),
-                        canonical.display()
-                    )
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        return Err(KlarnetError::Action(format!(
-            "Multiple Silero models matching '{}' found: {}. Remove duplicates or set 'tts.model' to an explicit path.",
-            model, details
-        )));
-    }
-
-    let (canonical, (original, _)) = unique.into_iter().next().unwrap();
-    if !canonical.is_file() {
-        return Err(KlarnetError::Action(format!(
-            "Resolved Silero model '{}' is not a file",
-            original.display()
-        )));
-    }
-
-    Ok(canonical)
+    None
 }
 
 impl SileroTts {
     pub async fn new(config: TtsConfig) -> KlarnetResult<Self> {
-        let script_path = resolve_project_path(&config.runtime.silero_script);
+        let script_path = if config.runtime.silero_script.is_relative() {
+            resolve_project_path(&config.runtime.silero_script)
+        } else {
+            config.runtime.silero_script.clone()
+        };
 
         if !script_path.exists() {
             return Err(KlarnetError::Action(format!(
@@ -160,16 +86,25 @@ impl SileroTts {
             )));
         }
 
-        let model_path = resolve_silero_model_path(&config.model)?;
+        let model_spec = config.model.trim();
+        if model_spec.is_empty() {
+            return Err(KlarnetError::Action(
+                "Silero model identifier must not be empty".to_string(),
+            ));
+        }
 
-        info!(model = %model_path.display(), "Resolved Silero model path");
+        let model = resolve_model_path(model_spec)
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| model_spec.to_string());
 
-        let process = Self::spawn_process(&config, &script_path, &model_path).await?;
+        info!(model = %model, "Using Silero model specification");
+
+        let process = Self::spawn_process(&config, &script_path, &model).await?;
 
         Ok(Self {
             config,
             script_path,
-            model_path,
+            model,
             process: Arc::new(Mutex::new(Some(process))),
         })
     }
@@ -177,7 +112,7 @@ impl SileroTts {
     async fn spawn_process(
         config: &TtsConfig,
         script_path: &Path,
-        model_path: &Path,
+        model: &str,
     ) -> KlarnetResult<SileroProcess> {
         let python_path = if config.runtime.python_path.is_relative()
             && config.runtime.python_path.components().count() > 1
@@ -192,7 +127,9 @@ impl SileroTts {
             .arg("-u")
             .arg(script_path)
             .arg("--model")
-            .arg(model_path)
+            .arg(model)
+            .arg("--language")
+            .arg(&config.language)
             .arg("--speaker")
             .arg(&config.speaker)
             .arg("--sample-rate")
@@ -266,8 +203,7 @@ impl SileroTts {
         }
 
         if restart_required {
-            let process =
-                Self::spawn_process(&self.config, &self.script_path, &self.model_path).await?;
+            let process = Self::spawn_process(&self.config, &self.script_path, &self.model).await?;
             *guard = Some(process);
         }
 
@@ -283,12 +219,9 @@ impl TtsBackend for SileroTts {
         let request = SileroRequest {
             id: Uuid::new_v4().to_string(),
             text: text.to_string(),
-            language: self.config.language.clone(),
             speaker: self.config.speaker.clone(),
             sample_rate: self.config.sample_rate,
             speed: self.config.speed,
-            model: self.model_path.to_string_lossy().to_string(),
-            device: self.config.device.clone(),
         };
 
         let synthesis_result = {
@@ -325,12 +258,9 @@ impl TtsBackend for SileroTts {
 struct SileroRequest {
     id: String,
     text: String,
-    language: String,
     speaker: String,
     sample_rate: u32,
     speed: f32,
-    model: String,
-    device: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

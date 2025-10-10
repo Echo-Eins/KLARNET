@@ -70,7 +70,10 @@ api_token_env = "HASS_TOKEN"
 [tts]
 enabled = true
 engine = "silero"  # silero | vits | piper
-model = "v4_ru"
+# Задайте язык Silero TTS и модель. Для моделей v4 укажите имя (например, "v4_ru"),
+# чтобы загрузить её через torch.hub. Для локальных архивов используйте путь к .pt файлу.
+language = "ru"
+model = "v4_ru"  # либо путь вида "models/silero/v3_ru.pt"
 speaker = "xenia"
 sample_rate = 48000
 speed = 1.0

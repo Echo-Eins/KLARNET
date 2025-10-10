@@ -54,7 +54,8 @@ LOGGER = logging.getLogger("silero_tts")
 class RuntimeArgs:
     """CLI arguments controlling the helper process."""
 
-    model_path: Path
+    model: str
+    language: str
     speaker: str
     sample_rate: int
     speed: float
@@ -88,22 +89,59 @@ class ModelCache:
     """Load Silero models lazily and keep them resident for reuse."""
 
     def __init__(self) -> None:
-        self._models: Dict[Tuple[Path, str], torch.nn.Module] = {}
+        self._models: Dict[Tuple[str, str, str], torch.nn.Module] = {}
         self._lock = threading.Lock()
 
-    def get(self, model_path: Path, device: torch.device) -> torch.nn.Module:
-        key = (model_path.resolve(), str(device))
+    def get(self, model: str, language: str, device: torch.device) -> torch.nn.Module:
+        """Load a Silero model either from disk or via torch.hub."""
+
+        model_path = Path(model)
+        is_file = model_path.is_file()
+
+        if is_file:
+            try:
+                cache_key_model = str(model_path.resolve())
+            except OSError:
+                cache_key_model = str(model_path)
+        else:
+            cache_key_model = model
+
+        key = (cache_key_model, language, str(device))
         with self._lock:
             if key in self._models:
+                LOGGER.debug("Returning cached Silero model for %s", cache_key_model)
                 return self._models[key]
 
-            LOGGER.info("Loading Silero model from %s on %s", model_path, device)
-            importer = PackageImporter(str(model_path))
-            model = importer.load_pickle("tts_models", "model")
-            if hasattr(model, "to"):
-                model.to(device)
+            LOGGER.info(
+                "Loading Silero model: %s (language=%s, device=%s)",
+                cache_key_model,
+                language,
+                device,
+            )
+
+            if is_file:
+                LOGGER.info("Loading Silero archive via PackageImporter: %s", model_path)
+                importer = PackageImporter(str(model_path))
+                loaded_model = importer.load_pickle("tts_models", "model")
+            else:
+                LOGGER.info(
+                    "Loading Silero model via torch.hub.load: language=%s speaker=%s",
+                    language,
+                    model,
+                )
+                loaded_model, _ = torch.hub.load(
+                    repo_or_dir="snakers4/silero-models",
+                    model="silero_tts",
+                    language=language,
+                    speaker=model,
+                    verbose=False,
+                )
+
+            if hasattr(loaded_model, "to"):
+                loaded_model.to(device)
+
             try:
-                speakers = list(list_speakers(model))
+                speakers = list(list_speakers(loaded_model))
                 if speakers:
                     preview = ", ".join(speakers[:10])
                     LOGGER.info(
@@ -114,11 +152,19 @@ class ModelCache:
                     )
             except Exception:  # noqa: BLE001
                 LOGGER.debug("Loaded model does not expose speakers list", exc_info=True)
-            self._models[key] = model
-            return model
+            self._models[key] = loaded_model
+            return loaded_model
 
 
 MODEL_CACHE = ModelCache()
+
+def list_speakers(model: torch.nn.Module) -> Iterable[str]:
+    """Extract available speaker names from a model, if exposed."""
+
+    speakers = getattr(model, "speakers", None)
+    if speakers is None:
+        return []
+    return speakers
 
 def normalize_filesystem_path(path: Path) -> Path:
     """Return a sanitized version of ``path`` that is safe on Windows."""
@@ -133,9 +179,15 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> RuntimeArgs:
     parser = argparse.ArgumentParser(description="Silero TTS stdio helper")
     parser.add_argument(
         "--model",
-        type=Path,
+        type=str,
         required=True,
-        help="Path to the Silero .pt model archive (e.g. v4_ru.pt)",
+        help="Model identifier: path to .pt archive or torch.hub speaker name",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="ru",
+        help="Language code used when downloading models via torch.hub",
     )
     parser.add_argument(
         "--speaker",
@@ -208,11 +260,14 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> RuntimeArgs:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-    raw_model_path: Path = args.model.expanduser()
-    model_path = normalize_filesystem_path(raw_model_path)
+    model_spec = args.model.strip()
+    if not model_spec:
+        parser.error("Model identifier must not be empty")
 
-    if not model_path.is_file():
-        parser.error(f"Model file not found: {model_path}")
+    normalized_model = model_spec
+    model_path = normalize_filesystem_path(Path(model_spec).expanduser())
+    if model_path.is_file():
+        normalized_model = str(model_path)
 
     if args.channels not in (1, 2):
         parser.error("Only mono or stereo output is supported")
@@ -220,7 +275,8 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> RuntimeArgs:
     target_rms = args.target_rms if args.target_rms > 0 else None
 
     runtime_args = RuntimeArgs(
-        model_path=model_path,
+        model=normalized_model,
+        language=args.language,
         speaker=args.speaker,
         sample_rate=args.sample_rate,
         speed=args.speed,
@@ -248,13 +304,6 @@ def resolve_device(device: str) -> torch.device:
         raise RuntimeError("CUDA device requested but CUDA is not available")
 
     return torch_device
-
-
-def list_speakers(model: torch.nn.Module) -> Iterable[str]:
-    if hasattr(model, "speakers"):
-        return getattr(model, "speakers")
-    raise AttributeError("Loaded Silero model does not expose speakers list")
-
 
 def normalize_audio(samples: np.ndarray, target_rms: Optional[float]) -> Tuple[np.ndarray, float]:
     if samples.size == 0:
@@ -308,15 +357,14 @@ def synthesize(
     model: torch.nn.Module,
     request: Dict[str, object],
     runtime: RuntimeArgs,
-    device: torch.device,
 ) -> Tuple[bytes, float, float]:
     text = str(request.get("text", ""))
     if not text.strip():
         raise ValueError("Text payload is empty")
 
     speaker = str(request.get("speaker", runtime.speaker))
-    available_speakers = list_speakers(model)
-    if speaker not in available_speakers:
+    available_speakers = list(list_speakers(model))
+    if available_speakers and speaker not in available_speakers:
         raise ValueError(
             f"Speaker '{speaker}' is not available. Supported speakers: "
             f"{', '.join(available_speakers)}"
@@ -393,11 +441,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return 2
 
     if runtime_args.preload:
-        MODEL_CACHE.get(runtime_args.model_path, device)
+        MODEL_CACHE.get(runtime_args.model, runtime_args.language, device)
 
     LOGGER.info(
-        "Silero helper ready: model=%s device=%s default_speaker=%s",
-        runtime_args.model_path,
+        "Silero helper ready: model=%s language=%s device=%s default_speaker=%s",
+        runtime_args.model,
+        runtime_args.language,
         device,
         runtime_args.speaker,
     )
@@ -444,12 +493,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
         request_id = request.get("id")
         try:
-            model = MODEL_CACHE.get(runtime_args.model_path, device)
+            model = MODEL_CACHE.get(runtime_args.model, runtime_args.language, device)
             pcm, quality, duration_ms = synthesize(
                 model=model,
                 request=request,
                 runtime=runtime_args,
-                device=device,
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Synthesis failed for request %s", request_id)
