@@ -191,16 +191,39 @@ impl KlarnetApp {
 
         let conversation_history = ConversationHistory::new(config.llm.max_history_messages);
 
+        async fn test_tts_after_init(tts: &Arc<TtsEngine>) {
+            let test_messages = vec![
+                "Кларнет готов к работе",
+                "Система инициализирована",
+                "Ожидание команд",
+            ];
+
+            for message in test_messages {
+                info!("Testing TTS with message: {}", message);
+                match tts.speak(message).await {
+                    Ok(_) => {
+                        info!("TTS test successful: {}", message);
+                        // Небольшая пауза между фразами
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    }
+                    Err(err) => {
+                        warn!("TTS test failed for '{}': {}", message, err);
+                    }
+                }
+            }
+        }
+
         let tts_engine = if config.tts().enabled {
             info!(engine = ?config.tts().engine, "Initialising TTS engine");
             match TtsEngine::new(config.tts().clone()).await {
                 Ok(engine) => {
                     info!("TTS engine initialised successfully");
-                    let engine = Arc::new(engine);
-                    if matches!(config.tts().engine.clone(), TtsEngineType::Silero) {
-                        play_silero_startup_prompt(engine.clone()).await;
-                    }
-                    Some(engine)
+                    let engine_arc = Arc::new(engine);
+
+                    // Тестирование TTS
+                    test_tts_after_init(&engine_arc).await;
+
+                    Some(engine_arc)
                 }
                 Err(err) => {
                     error!("Failed to initialise TTS engine: {err}");
@@ -599,10 +622,15 @@ fn roles_equal(left: &LlmRole, right: &LlmRole) -> bool {
 }
 
 async fn speak_with_retry(engine: Arc<TtsEngine>, text: String, attempts: u32) {
+    info!("speak_with_retry called with text: '{}'", text);  // Добавить эту строку
     let retries = attempts.max(1);
     for attempt in 1..=retries {
+        info!("TTS attempt {} of {}", attempt, retries);  // Добавить эту строку
         match engine.speak(&text).await {
-            Ok(_) => return,
+            Ok(_) => {
+                info!("TTS playback successful");  // Добавить эту строку
+                return;
+            }
             Err(err) => {
                 warn!(attempt, retries, "TTS playback failed: {err}");
                 if attempt < retries {

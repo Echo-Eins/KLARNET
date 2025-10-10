@@ -8,6 +8,7 @@ use std::io::{self, IsTerminal, Write};
 #[cfg(feature = "hardware")]
 use tracing::{info, warn};
 
+use tracing::debug;
 use crate::app::AppConfig;
 
 #[cfg(feature = "hardware")]
@@ -66,6 +67,204 @@ pub fn prepare_audio_devices(config: &mut AppConfig) -> Result<()> {
     #[cfg(not(feature = "hardware"))]
     {
         let _ = config;
+        Ok(())
+    }
+}
+
+pub fn force_interactive_device_selection(config: &mut AppConfig) -> Result<()> {
+    #[cfg(feature = "hardware")]
+    {
+        println!("\n=== Настройка аудио устройств KLARNET ===\n");
+
+        // Получаем список устройств
+        let input_devices = enumerate_input_devices()?;
+        let output_devices = enumerate_output_devices()?;
+
+        // Показываем текущие настройки
+        println!("Текущие настройки:");
+        println!("  Устройство ввода: {}",
+                 config.audio().input_device.as_deref().unwrap_or("по умолчанию"));
+        println!("  Устройство вывода: {}\n",
+                 config.tts().device.as_deref().unwrap_or("по умолчанию"));
+
+        // Выбор устройства ввода (микрофона)
+        if !input_devices.is_empty() {
+            println!("📤 Устройства ввода (микрофоны):");
+            for (idx, name) in input_devices.iter().enumerate() {
+                println!("  [{}] {}", idx + 1, name);
+            }
+            println!("  [0] Использовать системное устройство по умолчанию");
+
+            loop {
+                print!("\nВыберите устройство ввода (0-{}): ", input_devices.len());
+                io::stdout().flush()?;
+
+                let mut buffer = String::new();
+                io::stdin().read_line(&mut buffer)?;
+                let trimmed = buffer.trim();
+
+                if let Ok(choice) = trimmed.parse::<usize>() {
+                    if choice == 0 {
+                        config.audio_mut().input_device = None;
+                        println!("✓ Используется устройство ввода по умолчанию");
+                        break;
+                    } else if choice > 0 && choice <= input_devices.len() {
+                        let selected = input_devices[choice - 1].clone();
+                        config.audio_mut().input_device = Some(selected.clone());
+                        println!("✓ Выбрано устройство ввода: {}", selected);
+                        break;
+                    }
+                }
+                println!("❌ Некорректный выбор. Попробуйте снова.");
+            }
+        } else {
+            warn!("Не найдено ни одного устройства ввода");
+        }
+
+        println!();
+
+        // Выбор устройства вывода (динамики/наушники)
+        if !output_devices.is_empty() {
+            println!("🔊 Устройства вывода (динамики/наушники):");
+            for (idx, name) in output_devices.iter().enumerate() {
+                // Помечаем популярные устройства
+                let mut label = name.clone();
+                if name.to_lowercase().contains("headphone") {
+                    label.push_str(" 🎧");
+                } else if name.to_lowercase().contains("speaker") {
+                    label.push_str(" 🔊");
+                }
+                println!("  [{}] {}", idx + 1, label);
+            }
+            println!("  [0] Использовать системное устройство по умолчанию");
+
+            loop {
+                print!("\nВыберите устройство вывода (0-{}): ", output_devices.len());
+                io::stdout().flush()?;
+
+                let mut buffer = String::new();
+                io::stdin().read_line(&mut buffer)?;
+                let trimmed = buffer.trim();
+
+                if let Ok(choice) = trimmed.parse::<usize>() {
+                    if choice == 0 {
+                        config.tts_mut().device = None;
+                        config.audio_mut().output_device = None;
+                        println!("✓ Используется устройство вывода по умолчанию");
+                        break;
+                    } else if choice > 0 && choice <= output_devices.len() {
+                        let selected = output_devices[choice - 1].clone();
+                        config.tts_mut().device = Some(selected.clone());
+                        config.audio_mut().output_device = Some(selected.clone());
+                        println!("✓ Выбрано устройство вывода: {}", selected);
+                        break;
+                    }
+                }
+                println!("❌ Некорректный выбор. Попробуйте снова.");
+            }
+        } else {
+            warn!("Не найдено ни одного устройства вывода");
+        }
+
+        println!("\n=== Настройка завершена ===\n");
+
+        // Логируем итоговую конфигурацию
+        info!(
+            "Аудио конфигурация: вход={}, выход={}",
+            config.audio().input_device.as_deref().unwrap_or("default"),
+            config.tts().device.as_deref().unwrap_or("default")
+        );
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "hardware"))]
+    {
+        let _ = config;
+        println!("Hardware feature не включена. Используются настройки по умолчанию.");
+        Ok(())
+    }
+}
+
+// Добавьте функцию для тестирования аудио устройств
+pub async fn test_audio_devices(config: &AppConfig) -> Result<()> {
+    #[cfg(feature = "hardware")]
+    {
+        use std::time::Duration;
+        use tokio::time::sleep;
+
+        println!("\n🔊 Тестирование аудио устройств...\n");
+
+        // Генерируем тестовый звук (простой тон)
+        let sample_rate = 48000;
+        let duration_secs = 0.5;
+        let frequency = 440.0; // Нота Ля
+        let samples_count = (sample_rate as f32 * duration_secs) as usize;
+
+        let mut test_sound = Vec::with_capacity(samples_count * 2);
+        for i in 0..samples_count {
+            let t = i as f32 / sample_rate as f32;
+            let sample = (t * frequency * 2.0 * std::f32::consts::PI).sin();
+            let sample_i16 = (sample * 0.3 * i16::MAX as f32) as i16;
+            test_sound.extend_from_slice(&sample_i16.to_le_bytes());
+        }
+
+        // Попробуем воспроизвести тестовый звук
+        println!("Воспроизведение тестового сигнала (440 Гц)...");
+
+        use crate::app::AppConfig;
+        use tts::player::AudioPlayer;
+
+        match AudioPlayer::new(config.tts().device.as_deref()) {
+            Ok(player) => {
+                match player.play_pcm(&test_sound, sample_rate) {
+                    Ok(_) => {
+                        println!("✓ Тестовый звук воспроизведён успешно");
+                        println!("  Вы должны были услышать короткий тон.\n");
+
+                        // Спрашиваем подтверждение
+                        print!("Вы услышали звук? (да/нет/повтор) [да]: ");
+                        io::stdout().flush()?;
+
+                        let mut response = String::new();
+                        io::stdin().read_line(&mut response)?;
+                        let response = response.trim().to_lowercase();
+
+                        match response.as_str() {
+                            "нет" | "n" | "no" => {
+                                println!("\n⚠️  Если вы не услышали звук, проверьте:");
+                                println!("  • Громкость системы");
+                                println!("  • Правильность выбранного устройства вывода");
+                                println!("  • Подключение динамиков/наушников\n");
+                            }
+                            "повтор" | "r" | "repeat" => {
+                                // Рекурсивно вызываем тест
+                                return Box::pin(test_audio_devices(config)).await;
+                            }
+                            _ => {
+                                println!("✓ Отлично! Аудио система работает корректно.\n");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ Ошибка воспроизведения: {}", e);
+                        println!("   Проверьте выбранное устройство вывода.\n");
+                    }
+                }
+            }
+            Err(e) => {
+                println!("❌ Не удалось инициализировать аудио плеер: {}", e);
+            }
+        }
+
+        sleep(Duration::from_millis(500)).await;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "hardware"))]
+    {
+        let _ = config;
+        println!("Тестирование аудио недоступно (hardware feature отключена)");
         Ok(())
     }
 }

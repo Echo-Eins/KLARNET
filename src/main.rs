@@ -27,7 +27,27 @@ async fn main() -> Result<()> {
     );
 
     let mut config = load_config().await?;
-    device::prepare_audio_devices(&mut config)?;
+
+    async fn main() -> Result<()> {
+        init_logging()?;
+        info!(
+        "Starting KLARNET Voice Assistant v{}",
+        env!("CARGO_PKG_VERSION")
+    );
+
+        let mut config = load_config().await?;
+
+        // Интерактивный выбор аудио устройств
+        device::force_interactive_device_selection(&mut config)?;
+
+        // Тестирование выбранных устройств
+        device::test_audio_devices(&config).await?;
+
+        let mut app = KlarnetApp::new(config).await?;
+        app.run().await?;
+
+        Ok(())
+    }
 
     let mut app = KlarnetApp::new(config).await?;
     app.run().await?;
