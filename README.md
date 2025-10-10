@@ -200,11 +200,11 @@ python scripts\download_model.py --size small --output models\
 # Debug сборка (для разработки)
 cargo build
 
-# Release сборка (оптимизированная)
-cargo build --release
+# Release сборка с максимальным функционалом (аппаратный ввод/вывод + gRPC)
+cargo build --release --all-features
 
-# С поддержкой GPU
-cargo build --release --features gpu
+# Минимальная release сборка без дополнительных модулей
+cargo build --release --no-default-features
 ```
 
 ---
@@ -217,24 +217,119 @@ cargo build --release --features gpu
 
 ```toml
 [app]
+assistant_name = "Кларнет"
 language = "ru"
-mode = "cpu"  # или "gpu" если есть CUDA
+mode = "gpu" # или "gpu" если есть CUDA
+pre_roll_ms = 1000
+max_utterance_s = 120  
 log_level = "info"
 
 [audio]
 sample_rate = 16000
-device = "default"  # или имя конкретного устройства
+channels = 1
+bits_per_sample = 16
+buffer_size = 1024
+input_device = "default"
+output_device = "default"
+
+[vad]
+mode = "energy"
+frame_duration_ms = 30
+energy_threshold = 0.01
+min_speech_duration_ms = 200
+min_silence_duration_ms = 500
+speech_pad_ms = 300
 
 [stt]
-model_path = "models/whisper-medium"
-compute_type = "int8"  # или "int8_float16" для GPU
+language = "ru"
+request_timeout_ms = 30000
+initialization_timeout_ms = 120000
+
+[stt.model]
+model_path = "models/faster-whisper-medium"
+device = "cuda"
+compute_type = "int8_float16"
+
+[stt.backend]
+type = "python"
+script = "scripts/whisper_server.py"
 
 [nlu]
-wake_words = ["джарвис", "ассистент", "компьютер"]
+mode = "hybrid"
+wake_words = ["Кларнет", "ассистент", "компьютер"]
+confidence_threshold = 0.7
+
+[nlu.local]
+intents_path = "config/patterns.yaml"
+entities_path = "config/entities.yaml"
+
+[nlu.llm]
+provider = "openrouter"
+model = "x-ai/grok-4-fast:free"
+api_key_env = "OPENROUTER_API_KEY"
+max_tokens = 500
+temperature = 0.3
+timeout_s = 5
 
 [api]
 enabled = true
+host = "0.0.0.0"
 port = 3000
+grpc_enabled = true
+grpc_port = 50051
+
+[actions]
+enabled_modules = ["system", "smart_home", "web"]
+scripts_dir = "scripts/actions"
+
+[actions.smart_home]
+api_url = "http://homeassistant.local:8123"
+api_token_env = "HASS_TOKEN"
+timeout_s = 5
+
+[actions.security]
+allow_system_commands = true
+require_confirmation = ["shutdown", "restart"]
+blocked_commands = []
+
+[tts]
+enabled = true
+engine = "silero"
+language = "ru"
+model = "v4_ru"
+speaker = "xenia"
+sample_rate = 48000
+speed = 1.0
+device = "cpu"
+
+[tts.cache]
+enabled = true
+directory = "cache/tts"
+max_entries = 128
+
+[tts.monitoring]
+enabled = true
+min_rms = 0.01
+max_latency_ms = 5000
+
+[tts.runtime]
+python_path = "python3"
+silero_script = "scripts/silero_tts.py"
+piper_binary = "piper"
+request_timeout_ms = 15000
+
+[metrics]
+enabled = true
+prometheus_port = 9090
+export_interval_s = 10
+
+[observability]
+metrics_enabled = true
+traces_enabled = true
+prometheus_port = 9090
+export_interval_s = 10
+service_name = "klarnet"
+traces_endpoint = "http://localhost:4317"
 ```
 
 ### 2️⃣ Запуск ассистента

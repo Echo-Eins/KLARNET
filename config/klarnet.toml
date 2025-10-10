@@ -1,6 +1,7 @@
 # config/klarnet.toml
 
 [app]
+assistant_name = "Кларнет"
 language = "ru"
 mode = "gpu"
 pre_roll_ms = 1000
@@ -12,33 +13,36 @@ sample_rate = 16000
 channels = 1
 bits_per_sample = 16
 buffer_size = 1024
-device = "default"
+input_device = "default"
+output_device = "default"
 
 [vad]
-mode = "webrtc"  # webrtc | energy | hybrid
-aggressiveness = 2  # 0-3
+mode = "energy"
 frame_duration_ms = 30
+energy_threshold = 0.01
+initial_noise_floor = 0.001
+noise_update_rate = 0.05
 min_speech_duration_ms = 200
 min_silence_duration_ms = 500
-energy_threshold = 0.01
+hysteresis_ratio = 0.2
 speech_pad_ms = 300
 
 [stt]
-model_path = "D/Coding/Rust/KLARNET/models/faster-whisper-medium"
-model_size = "medium"  # tiny | base | small | medium | large
-compute_type = "int8_float16"  # Для CPU можно использовать (и по умолчанию применяется) int8
 language = "ru"
-beam_size = 5
-vad_filter = true
-word_timestamps = true
+request_timeout_ms = 30000
+initialization_timeout_ms = 120000
+retry_attempts = 2
+retry_backoff_ms = 500
+
+[stt.model]
+model_path = "models/faster-whisper-medium"
 device = "cuda"
-device_index = 0
-num_workers = 1
-batch_size = 1
-max_segment_length = 30.0
+compute_type = "int8_float16"
+cache_dir = "cache/whisper"
 
 [stt.backend]
-type = "python"  # единственный поддерживаемый вариант (faster-whisper)
+type = "python"
+executable = "python3"
 script = "scripts/whisper_server.py"
 
 [nlu]
@@ -47,8 +51,8 @@ wake_words = ["Кларнет", "ассистент", "компьютер"]
 confidence_threshold = 0.7
 
 [nlu.local]
-patterns_file = "config/patterns.yaml"
-entities_file = "config/entities.yaml"
+intents_path = "config/patterns.yaml"
+entities_path = "config/entities.yaml"
 
 [nlu.llm]
 provider = "openrouter"
@@ -57,7 +61,13 @@ api_key = "" # Укажите ключ напрямую или оставьте 
 api_key_env = "OPENROUTER_API_KEY"
 max_tokens = 500
 temperature = 0.3
+top_p = 0.95
 timeout_s = 5
+retry_attempts = 3
+cache_enabled = true
+cache_ttl_s = 3600
+max_concurrent_requests = 1
+min_request_interval_ms = 0
 
 [actions]
 enabled_modules = ["system", "smart_home", "web"]
@@ -66,6 +76,12 @@ scripts_dir = "scripts/actions"
 [actions.smart_home]
 api_url = "http://homeassistant.local:8123"
 api_token_env = "HASS_TOKEN"
+timeout_s = 5
+
+[actions.security]
+allow_system_commands = true
+require_confirmation = ["shutdown", "restart"]
+blocked_commands = []
 
 [tts]
 enabled = true
@@ -79,15 +95,29 @@ sample_rate = 48000
 speed = 1.0
 device = "cpu"
 
+[tts.cache]
+enabled = true
+directory = "cache/tts"
+max_entries = 128
+
+[tts.monitoring]
+enabled = true
+min_rms = 0.01
+max_latency_ms = 5000
+
+[tts.runtime]
+python_path = "python3"
+silero_script = "scripts/silero_tts.py"
+piper_binary = "piper"
+request_timeout_ms = 15000
+
 [api]
 enabled = true
 host = "0.0.0.0"
 port = 3000
 cors_origins = ["*"]
-
-[api.auth]
-enabled = false
-jwt_secret_env = "JWT_SECRET"
+grpc_enabled = true
+grpc_port = 50051
 
 [metrics]
 enabled = true
@@ -95,6 +125,9 @@ prometheus_port = 9090
 export_interval_s = 10
 
 [observability]
+metrics_enabled = true
 traces_enabled = true
-traces_endpoint = "http://localhost:4317"
+prometheus_port = 9090
+export_interval_s = 10
 service_name = "klarnet"
+traces_endpoint = "http://localhost:4317"
