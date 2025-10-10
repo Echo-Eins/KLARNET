@@ -452,15 +452,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     )
 
     stdin_buffer = sys.stdin.buffer
+    supports_select = os.name != "nt"
 
     while not signal_handler.should_stop():
-        if not stdin_buffer.closed:
-            ready, _, _ = select.select([stdin_buffer], [], [], 0.1)
-        else:
-            ready = []
+        if supports_select:
+            if stdin_buffer.closed:
+                break
 
-        if not ready:
-            continue
+                ready, _, _ = select.select([stdin_buffer], [], [], 0.1)
+                if not ready:
+                    continue
+            else:
+                if stdin_buffer.closed:
+                    break
 
         try:
             line_bytes = stdin_buffer.readline()
