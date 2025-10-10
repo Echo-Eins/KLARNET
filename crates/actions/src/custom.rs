@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::{ActionHandler, ActionResult};
 use async_trait::async_trait;
-use klarnet_core::{KlarnetError, KlarnetResult, LocalCommand};
+use klarnet_core::{resolve_project_path, KlarnetError, KlarnetResult, LocalCommand};
 use std::process::Command as ProcessCommand;
 
 pub struct CustomActions {
@@ -13,7 +13,7 @@ pub struct CustomActions {
 
 impl CustomActions {
     pub fn new(scripts_dir: String) -> KlarnetResult<Self> {
-        let path = PathBuf::from(scripts_dir);
+        let path = resolve_project_path(scripts_dir.as_str());
         if !path.exists() {
             std::fs::create_dir_all(&path).map_err(|e| {
                 KlarnetError::Action(format!("Failed to create scripts dir: {}", e))

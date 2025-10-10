@@ -1,6 +1,9 @@
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+use serde::Deserialize;
 
 fn env_project_root() -> Option<PathBuf> {
     for var in ["KLARNET_HOME", "KLARNET_ROOT"] {
@@ -129,6 +132,44 @@ pub fn resolve_project_path<P: AsRef<Path>>(path: P) -> PathBuf {
     }
 
     path.to_path_buf()
+}
+
+/// Resolve a path located inside the project's `scripts` directory.
+///
+/// Relative paths that already start with `scripts/` are resolved against the
+/// project root unchanged. Bare filenames (e.g. `whisper_server.py`) are
+/// considered to live directly inside the `scripts` folder. Absolute paths are
+/// returned verbatim.
+pub fn resolve_scripts_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path = path.as_ref();
+
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let mut components = path.components();
+    if let Some(Component::Normal(first)) = components.next() {
+        if first == OsStr::new("scripts") {
+            return resolve_project_path(path);
+        }
+    }
+
+    resolve_project_path(Path::new("scripts").join(path))
+}
+
+/// Convenience accessor that resolves the project `scripts` directory itself.
+pub fn resolve_scripts_dir() -> PathBuf {
+    resolve_project_path("scripts")
+}
+
+/// Deserialize a project-relative path, resolving it against the detected
+/// project root when necessary.
+pub fn deserialize_project_path<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = PathBuf::deserialize(deserializer)?;
+    Ok(resolve_project_path(raw))
 }
 
 /// Return potential site-packages directories inside the project's virtual environment.

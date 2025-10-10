@@ -7,6 +7,7 @@ import logging
 import struct
 import sys
 from typing import Any, Dict, List
+import os
 
 import numpy as np
 from faster_whisper import WhisperModel
@@ -71,13 +72,18 @@ def main() -> None:
     args = parse_args()
 
     # Load model
+    model_path = args.model_path
+    if model_path.startswith("\\\\?\\"):
+        model_path = model_path[4:]
+    model_path = os.path.normpath(model_path)
+
     model = WhisperModel(
-        args.model_path,
+        model_path,
         device=args.device,
         compute_type=args.compute_type,
     )
 
-    LOGGER.info("Model loaded from %s", args.model_path)
+    LOGGER.info("Model loaded from %s", model_path)
     stdin_buffer = sys.stdin.buffer
     stdout_buffer = sys.stdout
 

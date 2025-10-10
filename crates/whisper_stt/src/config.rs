@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use klarnet_core::{resolve_python_path, KlarnetError, KlarnetResult};
+use klarnet_core::{resolve_python_path, resolve_scripts_path, KlarnetError, KlarnetResult};
 use serde::{Deserialize, Serialize};
 
 pub const SUPPORTED_LANGUAGES: &[&str] = &[
@@ -49,7 +49,10 @@ impl Default for WhisperModelConfig {
 pub struct WhisperPythonConfig {
     #[serde(default = "WhisperPythonConfig::default_executable")]
     pub executable: PathBuf,
-    #[serde(default = "WhisperPythonConfig::default_script")]
+    #[serde(
+        default = "WhisperPythonConfig::default_script",
+        deserialize_with = "klarnet_core::deserialize_project_path"
+    )]
     pub script: PathBuf,
     #[serde(default)]
     pub extra_args: Vec<String>,
@@ -63,7 +66,7 @@ impl WhisperPythonConfig {
     }
 
     fn default_script() -> PathBuf {
-        PathBuf::from("scripts/whisper_server.py")
+        resolve_scripts_path("whisper_server.py")
     }
 }
 

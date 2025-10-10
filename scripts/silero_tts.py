@@ -28,6 +28,7 @@ import select
 import signal
 import sys
 import threading
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,6 +120,14 @@ class ModelCache:
 
 MODEL_CACHE = ModelCache()
 
+def normalize_filesystem_path(path: Path) -> Path:
+    """Return a sanitized version of ``path`` that is safe on Windows."""
+
+    raw_path = str(path)
+    if raw_path.startswith("\\\\?\\"):
+        raw_path = raw_path[4:]
+    normalized = os.path.normpath(raw_path)
+    return Path(normalized)
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> RuntimeArgs:
     parser = argparse.ArgumentParser(description="Silero TTS stdio helper")
@@ -199,7 +208,9 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> RuntimeArgs:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-    model_path: Path = args.model
+    raw_model_path: Path = args.model.expanduser()
+    model_path = normalize_filesystem_path(raw_model_path)
+
     if not model_path.is_file():
         parser.error(f"Model file not found: {model_path}")
 

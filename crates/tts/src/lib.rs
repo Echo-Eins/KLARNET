@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use klarnet_core::{resolve_python_path, KlarnetError, KlarnetResult};
+use klarnet_core::{resolve_python_path, resolve_scripts_path, KlarnetError, KlarnetResult};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -59,6 +59,10 @@ impl Default for TtsMonitoringConfig {
 pub struct TtsRuntimeConfig {
     #[serde(default = "TtsRuntimeConfig::default_python_path")]
     pub python_path: PathBuf,
+    #[serde(
+        default = "TtsRuntimeConfig::default_silero_script",
+        deserialize_with = "klarnet_core::deserialize_project_path"
+    )]
     pub silero_script: PathBuf,
     pub piper_binary: PathBuf,
     pub request_timeout_ms: u64,
@@ -68,13 +72,17 @@ impl TtsRuntimeConfig {
     fn default_python_path() -> PathBuf {
         resolve_python_path()
     }
+
+    fn default_silero_script() -> PathBuf {
+        resolve_scripts_path("silero_tts.py")
+    }
 }
 
 impl Default for TtsRuntimeConfig {
     fn default() -> Self {
         Self {
             python_path: Self::default_python_path(),
-            silero_script: PathBuf::from("scripts/silero_tts.py"),
+            silero_script: Self::default_silero_script(),
             piper_binary: PathBuf::from("piper"),
             request_timeout_ms: 15_000,
         }
