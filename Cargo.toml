@@ -101,3 +101,4 @@ async-trait = "0.1"
 [build-dependencies]
 chrono.workspace = true
 tonic-build = "0.12"
+protoc-bin-vendored = "3"

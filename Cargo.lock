@@ -1220,6 +1220,7 @@ dependencies = [
  "klarnet-observability",
  "llm-connector",
  "nlu",
+ "protoc-bin-vendored",
  "rand",
  "serde",
  "serde_json",

@@ -6,7 +6,11 @@ fn main() {
     {
         let proto_path = std::path::Path::new("proto/klarnet.proto");
         if proto_path.exists() {
+            let protoc_path =
+                protoc_bin_vendored::protoc_bin_path().expect("Failed to locate bundled protoc");
+
             tonic_build::configure()
+                .protoc_path(&protoc_path)
                 .build_server(true)
                 .build_client(false)
                 .compile(&["proto/klarnet.proto"], &["proto"])
