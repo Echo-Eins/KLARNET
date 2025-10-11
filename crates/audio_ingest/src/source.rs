@@ -144,6 +144,33 @@ impl MicrophoneSource {
                     )
                     .map_err(|e| KlarnetError::Audio(e.to_string()))?
             }
+            SampleFormat::U8 => {
+                let tx = tx.clone();
+                device
+                    .build_input_stream(
+                        &stream_config,
+                        move |data: &[u8], _| {
+                            // Конвертируем U8 → F32
+                            let converted: Vec<f32> = data
+                                .iter()
+                                .map(|&sample| {
+                                    // U8: 0-255 → F32: -1.0 to 1.0
+                                    (sample as f32 / 128.0) - 1.0
+                                })
+                                .collect();
+
+                            Self::handle_input_frame(
+                                &tx,
+                                &converted,
+                                actual_sample_rate,
+                                actual_channels,
+                            );
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|e| KlarnetError::Audio(e.to_string()))?
+            }
             SampleFormat::U16 => {
                 let tx = tx.clone();
                 device

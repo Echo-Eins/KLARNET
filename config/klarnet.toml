@@ -1,9 +1,7 @@
-# config/klarnet.toml
-
 [app]
 assistant_name = "Кларнет"
 language = "ru"
-mode = "gpu"
+mode = "cpu"
 pre_roll_ms = 1000
 max_utterance_s = 120
 log_level = "info"
@@ -13,8 +11,8 @@ sample_rate = 16000
 channels = 1
 bits_per_sample = 16
 buffer_size = 1024
-input_device = "default"
-output_device = "default"
+input_device = "Набор микрофонов (Технология Intel® Smart Sound для цифровых микрофонов)"
+output_device = "Колонки (Realtek(R) Audio)"
 
 [vad]
 mode = "energy"
@@ -35,18 +33,17 @@ retry_attempts = 2
 retry_backoff_ms = 500
 
 [stt.model]
-model_path = "models/faster-whisper-medium"
-device = "cuda"
-compute_type = "int8_float16"
-cache_dir = "cache/whisper"
+model_path = "models/whisper-medium"
+device = "cpu"
+compute_type = "int8"
 
 [stt.backend]
 type = "python"
-executable = "python3"
+# ✅ НЕ указывайте executable - автопоиск .venv
 script = "scripts/whisper_server.py"
 
 [nlu]
-mode = "Hybrid"  # local | llm | hybrid
+mode = "Hybrid"
 wake_words = ["Кларнет", "ассистент", "компьютер"]
 confidence_threshold = 0.7
 
@@ -57,7 +54,7 @@ entities_path = "config/entities.yaml"
 [nlu.llm]
 provider = "openrouter"
 model = "x-ai/grok-4-fast:free"
-api_key = "" # Укажите ключ напрямую или оставьте пустым, чтобы использовать переменную окружения
+api_key = ""
 api_key_env = "OPENROUTER_API_KEY"
 max_tokens = 500
 temperature = 0.3
@@ -85,15 +82,12 @@ blocked_commands = []
 
 [tts]
 enabled = true
-engine = "silero"  # silero | vits | piper
-# Задайте язык Silero TTS и модель. Для моделей v4 укажите имя (например, "v4_ru"),
-# чтобы загрузить её через torch.hub. Для локальных архивов используйте путь к .pt файлу.
+engine = "silero"
 language = "ru"
-model = "v4_ru"  # либо путь вида "models/silero/v3_ru.pt"
+model = "v4_ru"
 speaker = "xenia"
 sample_rate = 48000
 speed = 1.0
-device = "cpu"
 
 [tts.cache]
 enabled = true
@@ -106,7 +100,7 @@ min_rms = 0.01
 max_latency_ms = 5000
 
 [tts.runtime]
-python_path = "python3"
+# ✅ НЕ указывайте python_path - автопоиск .venv
 silero_script = "scripts/silero_tts.py"
 piper_binary = "piper"
 request_timeout_ms = 15000

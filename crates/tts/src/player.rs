@@ -979,6 +979,22 @@ impl StreamSupervisor {
                     None,
                 )
                 .map_err(|err| KlarnetError::Audio(format!("Failed to build u16 stream: {err}")))?,
+            SampleFormat::U8 => {
+                let state = stream_state.clone();
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [u8], _| {
+                            render_output(data, &state, convert_u8);
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|err| {
+                        KlarnetError::Audio(format!("Failed to build u8 stream: {err}"))
+                    })?
+            }
+
             other => {
                 return Err(KlarnetError::Audio(format!(
                     "Unsupported sample format reported by device: {other:?}"
@@ -1163,6 +1179,13 @@ fn convert_u16(sample: f32) -> (u16, f32) {
     let int_sample = clamp_to_i16(clamped);
     let shifted = (int_sample as i32 + i16::MAX as i32 + 1).clamp(0, u16::MAX as i32) as u16;
     (shifted, clamped)
+}
+
+#[cfg(feature = "hardware-audio")]
+fn convert_u8(sample: f32) -> u8 {
+    // F32: -1.0 to 1.0 → U8: 0-255
+    let normalized = (sample.clamp(-1.0, 1.0) + 1.0) * 0.5;
+    (normalized * 255.0) as u8
 }
 
 fn prepare_samples_for_output(
