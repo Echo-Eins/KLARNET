@@ -46,7 +46,7 @@ executable = "python3"
 script = "scripts/whisper_server.py"
 
 [nlu]
-mode = "hybrid"  # local | llm | hybrid
+mode = "Hybrid"  # local | llm | hybrid
 wake_words = ["Кларнет", "ассистент", "компьютер"]
 confidence_threshold = 0.7
 

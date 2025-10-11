@@ -18,9 +18,16 @@ fn env_project_root() -> Option<PathBuf> {
 }
 
 fn is_project_root(dir: &Path) -> bool {
-    dir.join(".venv").is_dir()
-        || dir.join("config").join("klarnet.toml").is_file()
-        || dir.join("Cargo.toml").is_file()
+    if dir.join(".venv").is_dir() {
+        return true;
+    }
+
+    let has_cargo = dir.join("Cargo.toml").is_file();
+    let has_config = dir.join("config").join("klarnet.toml").is_file();
+    let has_models = dir.join("models").is_dir();
+    let has_scripts = dir.join("scripts").is_dir();
+
+    has_cargo && has_config && has_models && has_scripts
 }
 
 fn find_root_upwards(start: &Path) -> Option<PathBuf> {
