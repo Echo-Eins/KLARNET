@@ -124,6 +124,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "cpal",
+ "dasp_sample",
  "klarnet-core",
  "tokio",
  "tracing",

@@ -127,7 +127,12 @@ impl SegmentCollector {
             timestamp,
             duration,
             sample_rate: self.config.sample_rate,
-            channels: self.config.channels,
+            channels: self
+                .active_frames
+                .first()
+                .or_else(|| self.pre_roll_frames.front())
+                .map(|frame| frame.channels)
+                .unwrap_or(1),
         };
 
         self.push_frame(frame)

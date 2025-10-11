@@ -9,7 +9,8 @@ use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
 #[cfg(feature = "hardware")]
 use tracing::{info, warn};
-
+use cpal::traits::DeviceTrait;
+#[cfg(feature = "hardware")]
 #[cfg(feature = "hardware")]
 const SKIP_PROMPT_ENV: &str = "KLARNET_SKIP_DEVICE_PROMPT";
 

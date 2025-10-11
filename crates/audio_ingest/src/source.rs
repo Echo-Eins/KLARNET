@@ -17,7 +17,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Sample, SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
 #[cfg(feature = "hardware")]
 use tracing::{error, warn};
-
+use dasp_sample::conv::ToSample;
+#[cfg(feature = "hardware")]
 #[async_trait]
 pub trait AudioSource: Send + Sync {
     async fn start(
@@ -46,7 +47,7 @@ unsafe impl Sync for MicrophoneSource {}
 impl MicrophoneSource {
     pub fn new(preferred: Option<&str>) -> KlarnetResult<Self> {
         let host = cpal::default_host();
-        let mut device = preferred
+        let device = preferred
             .and_then(|name| find_input_device(&host, name))
             .or_else(|| host.default_input_device());
 
@@ -270,13 +271,17 @@ impl MicrophoneSource {
         sample_rate: u32,
         channels: u16,
     ) where
-        T: Sample,
+        T: Sample + ToSample<f32>,
     {
         if data.is_empty() || sample_rate == 0 || channels == 0 {
             return;
         }
 
-        let pcm: Vec<f32> = data.iter().map(|sample| sample.to_f32()).collect();
+        let pcm: Vec<f32> = data
+            .iter()
+            .copied()
+            .map(|sample| sample.to_sample::<f32>())
+            .collect();
         let channels_usize = channels as usize;
         let duration = Duration::from_secs_f32(
             pcm.len() as f32 / (sample_rate as f32 * channels_usize as f32),

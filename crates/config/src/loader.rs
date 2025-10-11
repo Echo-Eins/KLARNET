@@ -116,7 +116,7 @@ mod tests {
         base.api.port = 1234;
         let mut override_cfg = base.clone();
         override_cfg.api.port = 5678;
-        override_cfg.app.assistant_name = "Jarvis".to_string();
+        override_cfg.app.assistant_name = "KLARNET".to_string();
 
         let merged = ConfigLoader::merge_configs(base.clone(), None).unwrap();
         assert_eq!(merged.api.port, base.api.port);
@@ -125,7 +125,7 @@ mod tests {
         ConfigLoader::save_to_file(file.path(), &override_cfg).unwrap();
         let merged = ConfigLoader::merge_configs(base, Some(file.path())).unwrap();
         assert_eq!(merged.api.port, 5678);
-        assert_eq!(merged.app.assistant_name, "Jarvis");
+        assert_eq!(merged.app.assistant_name, "KLARNET");
     }
 
     #[test]
