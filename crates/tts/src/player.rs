@@ -1016,6 +1016,17 @@ struct StreamResources {
     stream: cpal::Stream,
 }
 
+// cpal guarantees that both `Device` and `Stream` can be sent and accessed from
+// different threads, however they do not currently implement `Send`/`Sync` in
+// a way that the compiler can detect through our wrapper struct. The
+// `StreamResources` struct is only accessed behind synchronization primitives
+// (a `tokio::sync::Mutex`), so it is safe to mark it as `Send` and `Sync`.
+#[cfg(feature = "hardware-audio")]
+unsafe impl Send for StreamResources {}
+
+#[cfg(feature = "hardware-audio")]
+unsafe impl Sync for StreamResources {}
+
 #[derive(Default, Clone)]
 struct PlaybackMetrics {
     total_samples: u64,
