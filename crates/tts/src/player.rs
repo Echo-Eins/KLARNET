@@ -1182,10 +1182,14 @@ fn convert_u16(sample: f32) -> (u16, f32) {
 }
 
 #[cfg(feature = "hardware-audio")]
-fn convert_u8(sample: f32) -> u8 {
+fn convert_u8(sample: f32) -> (u8, f32) {
     // F32: -1.0 to 1.0 → U8: 0-255
-    let normalized = (sample.clamp(-1.0, 1.0) + 1.0) * 0.5;
-    (normalized * 255.0) as u8
+    let clamped = sample.clamp(-1.0, 1.0);
+    let normalized = (clamped + 1.0) * 0.5;
+    let converted = (normalized * u8::MAX as f32)
+        .round()
+        .clamp(0.0, u8::MAX as f32) as u8;
+    (converted, clamped)
 }
 
 fn prepare_samples_for_output(
