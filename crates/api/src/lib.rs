@@ -86,11 +86,7 @@ pub struct ApiServer {
 }
 
 impl ApiServer {
-    pub fn new(
-        config: ApiConfig,
-        handlers: ApiHandlers,
-        sample_rate: u32,
-    ) -> Self {
+    pub fn new(config: ApiConfig, handlers: ApiHandlers, sample_rate: u32) -> Self {
         Self {
             config,
             handlers: Arc::new(handlers),

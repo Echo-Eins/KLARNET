@@ -38,6 +38,7 @@ pub struct AudioFrame {
     pub timestamp: DateTime<Utc>,
     pub duration: Duration,
     pub sample_rate: u32,
+    pub channels: u16,
 }
 
 /// Audio chunk for processing

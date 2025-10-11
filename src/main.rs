@@ -1,12 +1,10 @@
 // src/main.rs
 
-use std::{
-    env,
-    path::PathBuf,
-};
+use std::{env, path::PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use klarnet_config::{ConfigLoader, ConfigValidator, KlarnetConfig};
+use klarnet_core::resolve_project_path;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -15,8 +13,8 @@ mod commands;
 mod device;
 mod pipeline;
 
-use app::{AppConfig, KlarnetApp};
 use crate::pipeline::PipelineConfig;
+use app::{AppConfig, KlarnetApp};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,9 +29,9 @@ async fn main() -> Result<()> {
     async fn main() -> Result<()> {
         init_logging()?;
         info!(
-        "Starting KLARNET Voice Assistant v{}",
-        env!("CARGO_PKG_VERSION")
-    );
+            "Starting KLARNET Voice Assistant v{}",
+            env!("CARGO_PKG_VERSION")
+        );
 
         let mut config = load_config().await?;
 
@@ -86,10 +84,10 @@ fn config_path_override() -> Result<Option<PathBuf>> {
                 let Some(value) = args.next() else {
                     return Err(anyhow!("Expected path after {}", arg));
                 };
-                override_path = Some(PathBuf::from(value));
+                override_path = Some(resolve_project_path(value));
             }
             _ if override_path.is_none() && !arg.starts_with('-') => {
-                override_path = Some(PathBuf::from(arg));
+                override_path = Some(resolve_project_path(&arg));
             }
             _ => {}
         }
@@ -99,12 +97,13 @@ fn config_path_override() -> Result<Option<PathBuf>> {
 }
 
 async fn load_runtime_config(path_override: Option<PathBuf>) -> Result<KlarnetConfig> {
-    if let Some(path) = path_override.or_else(|| env::var("KLARNET_CONFIG").ok().map(PathBuf::from))
+    if let Some(path) =
+        path_override.or_else(|| env::var("KLARNET_CONFIG").ok().map(resolve_project_path))
     {
         return read_runtime_from_path(path).await;
     }
 
-    let default_path = PathBuf::from("config/klarnet.toml");
+    let default_path = resolve_project_path("config/klarnet.toml");
     if default_path.exists() {
         return read_runtime_from_path(default_path).await;
     }

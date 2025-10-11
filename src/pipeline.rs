@@ -6,8 +6,8 @@ use chrono::Utc;
 use klarnet_buffering::{BufferConfig as SegmentBufferConfig, CompletedSegment, SegmentCollector};
 use klarnet_config::KlarnetConfig;
 use klarnet_core::{
-    AudioConfig, AudioFrame, CommandType, NluResult, Transcript, TranscriptSegment,
-    VadEvent, WordInfo,
+    AudioConfig, AudioFrame, CommandType, NluResult, Transcript, TranscriptSegment, VadEvent,
+    WordInfo,
 };
 use nlu::{NluConfig, NluEngine};
 use serde::{Deserialize, Serialize};
@@ -788,6 +788,7 @@ mod tests {
             timestamp: Utc::now(),
             duration: Duration::from_millis(duration_ms),
             sample_rate,
+            channels: 1,
         }
     }
 

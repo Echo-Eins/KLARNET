@@ -216,15 +216,15 @@ impl AudioIngest {
         frame: AudioFrame,
     ) -> Option<(AudioFrame, Arc<[f32]>)> {
         let pcm: Vec<f32> = frame.data.iter().copied().collect();
-        let resampled = resampler.resample(&pcm, frame.sample_rate);
-        let processed = match processor.process(&resampled) {
+        let processed = match processor.process(&pcm, frame.channels) {
             Ok(data) => data,
             Err(err) => {
                 warn!("Audio processor error: {err}");
                 return None;
             }
         };
-        let normalized = processor.normalize(&processed);
+        let resampled = resampler.resample(&processed, frame.sample_rate);
+        let normalized = processor.normalize(&resampled);
         let arc_data: Arc<[f32]> = Arc::from(normalized.into_boxed_slice());
 
         let duration =
@@ -235,6 +235,7 @@ impl AudioIngest {
             timestamp: frame.timestamp,
             duration,
             sample_rate: resampler.target_rate(),
+            channels: processor.target_channels(),
         };
 
         Some((frame, arc_data))

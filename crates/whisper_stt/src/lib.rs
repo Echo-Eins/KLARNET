@@ -942,6 +942,7 @@ while True:
                 config.buffer_size as f32 / config.sample_rate as f32,
             ),
             sample_rate: config.sample_rate,
+            channels: config.channels,
         };
 
         AudioChunk::new(vec![frame])

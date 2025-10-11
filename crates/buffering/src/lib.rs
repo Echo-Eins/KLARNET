@@ -127,6 +127,7 @@ impl SegmentCollector {
             timestamp,
             duration,
             sample_rate: self.config.sample_rate,
+            channels: self.config.channels,
         };
 
         self.push_frame(frame)

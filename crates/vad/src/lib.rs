@@ -382,6 +382,7 @@ mod tests {
             timestamp,
             duration,
             sample_rate: 16_000,
+            channels: 1,
         }
     }
 

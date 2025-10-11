@@ -1,4 +1,6 @@
 #[cfg(feature = "hardware")]
+use crate::app::AppConfig;
+#[cfg(feature = "hardware")]
 use anyhow::Context;
 use anyhow::Result;
 #[cfg(feature = "hardware")]
@@ -7,10 +9,6 @@ use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
 #[cfg(feature = "hardware")]
 use tracing::{info, warn};
-use cpal::traits::{DeviceTrait, HostTrait};
-#[cfg(feature = "hardware")]
-
-use crate::app::AppConfig;
 
 #[cfg(feature = "hardware")]
 const SKIP_PROMPT_ENV: &str = "KLARNET_SKIP_DEVICE_PROMPT";

@@ -211,6 +211,7 @@ pub(crate) fn build_chunk_from_pcm(samples: &[f32], sample_rate: u32) -> AudioCh
         timestamp: Utc::now(),
         duration,
         sample_rate,
+        channels: 1,
     };
 
     AudioChunk::new(vec![frame])

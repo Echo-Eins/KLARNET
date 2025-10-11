@@ -14,7 +14,7 @@ use tracing::info;
 #[cfg(feature = "hardware")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[cfg(feature = "hardware")]
-use cpal::{Device, Stream, StreamConfig};
+use cpal::{Device, Sample, SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
 #[cfg(feature = "hardware")]
 use tracing::{error, warn};
 
@@ -84,35 +84,89 @@ impl MicrophoneSource {
             .as_ref()
             .ok_or_else(|| KlarnetError::Audio("Device not initialized".to_string()))?;
 
-        let cpal_config = StreamConfig {
-            channels: config.channels,
-            sample_rate: cpal::SampleRate(config.sample_rate),
-            buffer_size: cpal::BufferSize::Fixed(config.buffer_size as u32),
-        };
+        let (mut stream_config, sample_format) = Self::negotiate_stream_config(device, &config)?;
+
+        // `negotiate_stream_config` always sets the buffer size to the device default, but
+        // calling `build_input_stream` requires a mutable reference. Reaffirm here so that
+        // future changes don't forget this requirement.
+        stream_config.buffer_size = cpal::BufferSize::Default;
+
+        let actual_sample_rate = stream_config.sample_rate.0;
+        let actual_channels = stream_config.channels;
+
+        if actual_sample_rate != config.sample_rate || actual_channels != config.channels {
+            info!(
+                requested_sample_rate = config.sample_rate,
+                requested_channels = config.channels,
+                actual_sample_rate,
+                actual_channels,
+                "Adjusted microphone stream configuration to match device capabilities"
+            );
+        }
 
         let err_fn = |err| error!("Audio stream error: {}", err);
 
-        let stream = device
-            .build_input_stream(
-                &cpal_config,
-                move |data: &[f32], _: &_| {
-                    let frame = AudioFrame {
-                        data: Arc::from(data.to_vec().into_boxed_slice()),
-                        timestamp: Utc::now(),
-                        duration: Duration::from_secs_f32(
-                            data.len() as f32 / config.sample_rate as f32,
-                        ),
-                        sample_rate: config.sample_rate,
-                    };
-
-                    if let Err(e) = tx.send(frame) {
-                        warn!("Failed to send audio frame: {}", e);
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| KlarnetError::Audio(e.to_string()))?;
+        let stream = match sample_format {
+            SampleFormat::F32 => {
+                let tx = tx.clone();
+                device
+                    .build_input_stream(
+                        &stream_config,
+                        move |data: &[f32], _| {
+                            Self::handle_input_frame(
+                                &tx,
+                                data,
+                                actual_sample_rate,
+                                actual_channels,
+                            );
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|e| KlarnetError::Audio(e.to_string()))?
+            }
+            SampleFormat::I16 => {
+                let tx = tx.clone();
+                device
+                    .build_input_stream(
+                        &stream_config,
+                        move |data: &[i16], _| {
+                            Self::handle_input_frame(
+                                &tx,
+                                data,
+                                actual_sample_rate,
+                                actual_channels,
+                            );
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|e| KlarnetError::Audio(e.to_string()))?
+            }
+            SampleFormat::U16 => {
+                let tx = tx.clone();
+                device
+                    .build_input_stream(
+                        &stream_config,
+                        move |data: &[u16], _| {
+                            Self::handle_input_frame(
+                                &tx,
+                                data,
+                                actual_sample_rate,
+                                actual_channels,
+                            );
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|e| KlarnetError::Audio(e.to_string()))?
+            }
+            other => {
+                return Err(KlarnetError::Audio(format!(
+                    "Unsupported input sample format reported by device: {other:?}"
+                )))
+            }
+        };
 
         Ok(stream)
     }
@@ -156,6 +210,92 @@ impl AudioSource for MicrophoneSource {
         &self.selected_name
     }
 }
+
+#[cfg(feature = "hardware")]
+impl MicrophoneSource {
+    fn negotiate_stream_config(
+        device: &Device,
+        requested: &AudioConfig,
+    ) -> KlarnetResult<(StreamConfig, SampleFormat)> {
+        let mut selected: Option<SupportedStreamConfig> = None;
+
+        match device.supported_input_configs() {
+            Ok(configs) => {
+                for range in configs {
+                    if range.channels() == requested.channels {
+                        if range.min_sample_rate().0 <= requested.sample_rate
+                            && range.max_sample_rate().0 >= requested.sample_rate
+                        {
+                            selected = Some(
+                                range.with_sample_rate(cpal::SampleRate(requested.sample_rate)),
+                            );
+                            break;
+                        }
+
+                        let fallback_rate = requested
+                            .sample_rate
+                            .clamp(range.min_sample_rate().0, range.max_sample_rate().0);
+                        selected = Some(range.with_sample_rate(cpal::SampleRate(fallback_rate)));
+                    } else if selected.is_none() {
+                        selected = Some(range.with_sample_rate(range.max_sample_rate()));
+                    }
+                }
+            }
+            Err(err) => {
+                warn!("Failed to query supported input configurations: {err}");
+            }
+        }
+
+        if selected.is_none() {
+            if let Ok(default_config) = device.default_input_config() {
+                selected = Some(default_config);
+            }
+        }
+
+        let Some(selected) = selected else {
+            return Err(KlarnetError::Audio(
+                "No supported input stream configurations reported by device".to_string(),
+            ));
+        };
+
+        let mut config = selected.config();
+        config.buffer_size = cpal::BufferSize::Default;
+
+        Ok((config, selected.sample_format()))
+    }
+
+    fn handle_input_frame<T>(
+        tx: &mpsc::UnboundedSender<AudioFrame>,
+        data: &[T],
+        sample_rate: u32,
+        channels: u16,
+    ) where
+        T: Sample,
+    {
+        if data.is_empty() || sample_rate == 0 || channels == 0 {
+            return;
+        }
+
+        let pcm: Vec<f32> = data.iter().map(|sample| sample.to_f32()).collect();
+        let channels_usize = channels as usize;
+        let duration = Duration::from_secs_f32(
+            pcm.len() as f32 / (sample_rate as f32 * channels_usize as f32),
+        );
+
+        let frame = AudioFrame {
+            data: Arc::from(pcm.into_boxed_slice()),
+            timestamp: Utc::now(),
+            duration,
+            sample_rate,
+            channels,
+        };
+
+        if let Err(err) = tx.send(frame) {
+            warn!("Failed to send audio frame: {err}");
+        }
+    }
+}
+
 
 #[cfg(feature = "hardware")]
 fn find_input_device(host: &cpal::Host, name: &str) -> Option<Device> {
@@ -254,6 +394,7 @@ impl AudioSource for StubSource {
                     timestamp: Utc::now(),
                     duration: frame_duration,
                     sample_rate,
+                    channels: config.channels,
                 };
 
                 if tx.send(frame).is_err() {

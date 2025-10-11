@@ -39,6 +39,7 @@ impl StreamingWhisper {
             timestamp: Utc::now(),
             duration,
             sample_rate: STREAM_SAMPLE_RATE,
+            channels: 1,
         };
 
         AudioChunk::new(vec![frame])
