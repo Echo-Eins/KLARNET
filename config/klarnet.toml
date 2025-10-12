@@ -11,7 +11,7 @@ sample_rate = 16000
 channels = 1
 bits_per_sample = 16
 # Начинаем консервативно
-buffer_size = 2048  # 128ms
+buffer_size = 4096  # 128ms
 
 # Если в логах видите overflow - увеличьте до:
 # buffer_size = 4096  # 256ms

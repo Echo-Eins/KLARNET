@@ -10,8 +10,8 @@ use std::{
 };
 
 use klarnet_core::{
-    CommandRoute, CommandRouting, CommandType, Entity, Intent, KlarnetError, KlarnetResult,
-    LocalCommand, NluResult, Transcript,
+    resolve_project_path, CommandRoute, CommandRouting, CommandType, Entity, Intent, KlarnetError,
+    KlarnetResult, LocalCommand, NluResult, Transcript,
 };
 use llm_connector::{
     CompletionRequest, CompletionResponse, Function as LlmFunction,
@@ -136,7 +136,10 @@ pub struct PhoneticNluConfig {
     pub auto_llm_on_no_match: bool,
     #[serde(default = "default_true")]
     pub auto_llm_on_low_confidence: bool,
-    #[serde(default = "default_phonetic_patterns_path")]
+    #[serde(
+        default = "default_phonetic_patterns_path",
+        deserialize_with = "klarnet_core::deserialize_project_path"
+    )]
     pub patterns_path: PathBuf,
 }
 
@@ -157,10 +160,9 @@ impl Default for PhoneticNluConfig {
 
 impl Default for LocalNluConfig {
     fn default() -> Self {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         Self {
-            intents_path: base.join("../../config/patterns.yaml"),
-            entities_path: base.join("../../config/entities.yaml"),
+            intents_path: resolve_project_path("config/patterns.yaml"),
+            entities_path: resolve_project_path("config/entities.yaml"),
             fallback: None,
         }
     }
@@ -259,8 +261,7 @@ fn default_phonetic_min_confidence() -> f32 {
 }
 
 fn default_phonetic_patterns_path() -> PathBuf {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    base.join("../../config/phonetic_patterns.yaml")
+    resolve_project_path("config/phonetic_patterns.yaml")
 }
 
 fn contains_question_word(text: &str) -> bool {
