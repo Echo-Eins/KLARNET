@@ -25,14 +25,37 @@ buffer_size = 2048  # 128ms
 input_device = "Набор микрофонов (Технология Intel® Smart Sound для цифровых микрофонов)"
 output_device = "Колонки (Realtek(R) Audio)"
 
+[wake_word]
+enabled = true
+keyword = "Кларнет"
+sensitivity = 0.7
+access_key = ""
+
+[acknowledgment]
+enabled = true
+phrases = [
+    "Слушаю",
+    "Да",
+    "Готов",
+    "Я вас слушаю",
+    "Готова к работе",
+    "Какая команда?",
+    "Внимательно слушаю",
+    "Чем могу помочь?",
+]
+history_size = 5
+recovery_rate = 0.3
+min_weight = 0.1
+cache_enabled = true
+
 [vad]
 mode = "energy"
 frame_duration_ms = 30
-energy_threshold = 0.01
+energy_threshold = 0.05
 initial_noise_floor = 0.001
 noise_update_rate = 0.05
-min_speech_duration_ms = 200
-min_silence_duration_ms = 500
+min_speech_duration_ms = 150
+min_silence_duration_ms = 400
 hysteresis_ratio = 0.2
 speech_pad_ms = 300
 
@@ -50,17 +73,23 @@ compute_type = "int8"
 
 [stt.backend]
 type = "python"
-# ✅ НЕ указывайте executable - автопоиск .venv
+# НЕ указывайте executable - автопоиск .venv
 script = "scripts/whisper_server.py"
 
 [nlu]
-mode = "Hybrid"
+mode = "Phonetic"
 wake_words = ["Кларнет", "Ларнет", "Гларнет", "Кларнед", "ассистент", "компьютер", "Ассистент", "Компьютер"]
 confidence_threshold = 0.7
 
-[nlu.local]
-intents_path = "config/patterns.yaml"
-entities_path = "config/entities.yaml"
+[nlu.phonetic]
+enabled = true
+max_distance = 2
+min_confidence = 0.6
+auto_llm_on_question = true
+auto_llm_on_long = true
+auto_llm_on_no_match = true
+auto_llm_on_low_confidence = true
+patterns_path = "config/phonetic_patterns.yaml"
 
 [nlu.llm]
 provider = "openrouter"
@@ -76,6 +105,24 @@ cache_enabled = true
 cache_ttl_s = 3600
 max_concurrent_requests = 1
 min_request_interval_ms = 0
+system_prompt = """
+Ты - голосовой помощник Кларнет. Исправляй ошибки распознавания речи и определяй намерение.
+
+Частые ошибки:
+- "Ларнет", "Гларнет", "Кларнед" → "Кларнет"
+- "фключи" → "включи"
+- "сфет" → "свет"
+
+Игнорируй фоновый шум: "КРЯХТИТ", "*шум*", "эээ"
+
+Отвечай ТОЛЬКО JSON:
+{
+  "intent": "название_интента",
+  "entities": {},
+  "confidence": 0.95,
+  "corrected_text": "исправленный текст"
+}
+"""
 
 [actions]
 enabled_modules = ["system", "smart_home", "web"]
@@ -98,12 +145,12 @@ language = "ru"
 model = "v4_ru"
 speaker = "xenia"
 sample_rate = 48000
-speed = 1.0
+speed = 1.1
 
 [tts.cache]
 enabled = true
 directory = "cache/tts"
-max_entries = 128
+max_entries = 256
 
 [tts.monitoring]
 enabled = true
@@ -111,7 +158,7 @@ min_rms = 0.01
 max_latency_ms = 5000
 
 [tts.runtime]
-# ✅ НЕ указывайте python_path - автопоиск .venv
+# НЕ указывайте python_path - автопоиск .venv
 silero_script = "scripts/silero_tts.py"
 piper_binary = "piper"
 request_timeout_ms = 15000

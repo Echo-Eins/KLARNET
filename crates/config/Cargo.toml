@@ -23,6 +23,7 @@ vad = { path = "../vad" }
 whisper_stt = { path = "../whisper_stt" }
 tts = { path = "../tts" }
 klarnet-api = { path = "../api" }
+ack_selector = { path = "../ack_selector" }
 
 [dev-dependencies]
 tempfile = "3.10"

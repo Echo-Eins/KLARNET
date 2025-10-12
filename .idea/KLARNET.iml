@@ -22,6 +22,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/api/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/buffering/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/config/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/ack_selector/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/phonetic/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>

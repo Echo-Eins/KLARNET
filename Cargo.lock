@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "ack_selector"
+version = "0.1.0"
+dependencies = [
+ "rand",
+ "serde",
+]
+
+[[package]]
 name = "actions"
 version = "0.1.0"
 dependencies = [
@@ -1279,6 +1287,7 @@ dependencies = [
 name = "klarnet-config"
 version = "0.1.0"
 dependencies = [
+ "ack_selector",
  "actions",
  "anyhow",
  "klarnet-api",
@@ -1552,6 +1561,7 @@ dependencies = [
  "klarnet-core",
  "llm-connector",
  "parking_lot",
+ "phonetic",
  "regex",
  "reqwest",
  "serde",
@@ -1817,6 +1827,13 @@ checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
 dependencies = [
  "fixedbitset",
  "indexmap 2.11.4",
+]
+
+[[package]]
+name = "phonetic"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

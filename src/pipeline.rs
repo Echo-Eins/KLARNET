@@ -82,12 +82,24 @@ impl PipelineConfig {
         if nlu.wake_words.is_empty() {
             nlu.wake_words.push(default_wake_word());
         }
-        Self {
-            wake_word: nlu
+        if config.wake_word.enabled
+            && !nlu
                 .wake_words
+            .iter()
+            .any(|word| word.eq_ignore_ascii_case(&config.wake_word.keyword))
+        {
+            nlu.wake_words.push(config.wake_word.keyword.clone());
+        }
+        let wake_keyword = if config.wake_word.enabled {
+            config.wake_word.keyword.clone()
+        } else {
+            nlu.wake_words
                 .first()
                 .cloned()
-                .unwrap_or_else(default_wake_word),
+                .unwrap_or_else(default_wake_word)
+        };
+        Self {
+            wake_word: wake_keyword,
             pre_roll_ms: config.app.pre_roll_ms,
             vad: config.vad.clone(),
             stt: config.stt.clone(),

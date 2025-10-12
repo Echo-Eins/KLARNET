@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ack_selector::AckConfig;
 use actions::ActionsConfig;
 pub use klarnet_api::ApiConfig;
 use klarnet_core::{AudioConfig, KlarnetResult};
@@ -75,6 +76,10 @@ impl Default for MetricsConfig {
 pub struct KlarnetConfig {
     pub app: AppSection,
     pub audio: AudioConfig,
+    #[serde(default)]
+    pub wake_word: WakeWordConfig,
+    #[serde(default)]
+    pub acknowledgment: AcknowledgmentConfig,
     pub vad: VadConfig,
     pub stt: WhisperConfig,
     pub nlu: NluConfig,
@@ -90,6 +95,8 @@ impl Default for KlarnetConfig {
         Self {
             app: AppSection::default(),
             audio: AudioConfig::default(),
+            wake_word: WakeWordConfig::default(),
+            acknowledgment: AcknowledgmentConfig::default(),
             vad: VadConfig::default(),
             stt: WhisperConfig::default(),
             nlu: NluConfig::default(),
@@ -100,6 +107,69 @@ impl Default for KlarnetConfig {
             observability: ObservabilityConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WakeWordConfig {
+    #[serde(default = "default_wake_word_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_wake_word_keyword")]
+    pub keyword: String,
+    #[serde(default = "default_wake_word_sensitivity")]
+    pub sensitivity: f32,
+    #[serde(default)]
+    pub access_key: Option<String>,
+}
+
+impl Default for WakeWordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            keyword: default_wake_word_keyword(),
+            sensitivity: default_wake_word_sensitivity(),
+            access_key: None,
+        }
+    }
+}
+
+fn default_wake_word_enabled() -> bool {
+    true
+}
+
+fn default_wake_word_keyword() -> String {
+    "Кларнет".to_string()
+}
+
+fn default_wake_word_sensitivity() -> f32 {
+    0.7
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcknowledgmentConfig {
+    #[serde(default = "default_ack_enabled")]
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub selector: AckConfig,
+    #[serde(default = "default_ack_cache_enabled")]
+    pub cache_enabled: bool,
+}
+
+impl Default for AcknowledgmentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            selector: AckConfig::default(),
+            cache_enabled: true,
+        }
+    }
+}
+
+fn default_ack_enabled() -> bool {
+    true
+}
+
+fn default_ack_cache_enabled() -> bool {
+    true
 }
 
 /// Runtime configuration manager that exposes thread-safe access and hot reload support.

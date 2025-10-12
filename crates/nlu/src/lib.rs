@@ -1,8 +1,7 @@
 mod llm;
 mod patterns;
-
+mod phonetic_config;
 mod wake_word;
-use wake_word::fuzzy_wake_word_match;
 
 use std::{
     path::PathBuf,
@@ -21,13 +20,16 @@ use llm_connector::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map as JsonMap, Value};
+use serde_json::{json, Map as JsonMap, Number, Value};
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 use llm::{LlmConfigurationSummary, LlmInterpretation, LlmRuntime, LlmUsageRecord};
 use patterns::{LocalIntentMatcher, MatchOutcome};
-
+use phonetic::PhoneticMatch;
+use phonetic_config::{
+    load_patterns as load_phonetic_patterns, LoadedPhoneticPatterns, PhoneticIntentMetadata,
+};
 const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.75;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,8 @@ pub struct NluConfig {
     #[serde(default)]
     pub local: Option<LocalNluConfig>,
     #[serde(default)]
+    pub phonetic: Option<PhoneticNluConfig>,
+    #[serde(default)]
     pub llm: Option<LlmModeConfig>,
 }
 
@@ -48,6 +52,7 @@ pub enum NluMode {
     Local,
     Llm,
     Hybrid,
+    Phonetic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +103,8 @@ pub struct LlmModeConfig {
     pub max_concurrent_requests: usize,
     #[serde(default = "default_llm_min_request_interval_ms")]
     pub min_request_interval_ms: u64,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 impl Default for NluConfig {
@@ -107,7 +114,43 @@ impl Default for NluConfig {
             wake_words: default_wake_words(),
             confidence_threshold: DEFAULT_CONFIDENCE_THRESHOLD,
             local: Some(LocalNluConfig::default()),
+            phonetic: None,
             llm: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhoneticNluConfig {
+    #[serde(default = "default_phonetic_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_phonetic_max_distance")]
+    pub max_distance: usize,
+    #[serde(default = "default_phonetic_min_confidence")]
+    pub min_confidence: f32,
+    #[serde(default = "default_true")]
+    pub auto_llm_on_question: bool,
+    #[serde(default = "default_true")]
+    pub auto_llm_on_long: bool,
+    #[serde(default = "default_true")]
+    pub auto_llm_on_no_match: bool,
+    #[serde(default = "default_true")]
+    pub auto_llm_on_low_confidence: bool,
+    #[serde(default = "default_phonetic_patterns_path")]
+    pub patterns_path: PathBuf,
+}
+
+impl Default for PhoneticNluConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_phonetic_enabled(),
+            max_distance: default_phonetic_max_distance(),
+            min_confidence: default_phonetic_min_confidence(),
+            auto_llm_on_question: default_true(),
+            auto_llm_on_long: default_true(),
+            auto_llm_on_no_match: default_true(),
+            auto_llm_on_low_confidence: default_true(),
+            patterns_path: default_phonetic_patterns_path(),
         }
     }
 }
@@ -140,6 +183,7 @@ impl Default for LlmModeConfig {
             cache_ttl_s: default_llm_cache_ttl_s(),
             max_concurrent_requests: default_llm_max_concurrent_requests(),
             min_request_interval_ms: default_llm_min_request_interval_ms(),
+            system_prompt: None,
         }
     }
 }
@@ -198,6 +242,33 @@ fn default_llm_top_p() -> f32 {
     0.95
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_phonetic_enabled() -> bool {
+    true
+}
+
+fn default_phonetic_max_distance() -> usize {
+    2
+}
+
+fn default_phonetic_min_confidence() -> f32 {
+    0.6
+}
+
+fn default_phonetic_patterns_path() -> PathBuf {
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    base.join("../../config/phonetic_patterns.yaml")
+}
+
+fn contains_question_word(text: &str) -> bool {
+    const QUESTION_WORDS: [&str; 7] = ["как", "что", "где", "когда", "почему", "зачем", "сколько"];
+    let lower = text.to_lowercase();
+    QUESTION_WORDS.iter().any(|word| lower.contains(word))
+}
+
 fn default_llm_timeout_s() -> u64 {
     10
 }
@@ -227,6 +298,8 @@ pub struct NluEngine {
     wake_words_lower: Vec<String>,
     local_matcher: Option<LocalIntentMatcher>,
     llm_runtime: Option<LlmRuntime>,
+    phonetic_config: Option<PhoneticNluConfig>,
+    phonetic_patterns: Option<LoadedPhoneticPatterns>,
     fallback: FallbackConfig,
 }
 
@@ -250,7 +323,16 @@ impl NluEngine {
             .or_else(|| config.local.as_ref().and_then(|c| c.fallback.clone()))
             .unwrap_or_default();
 
-        let llm_runtime = if matches!(config.mode, NluMode::Llm | NluMode::Hybrid) {
+        let phonetic_config = config.phonetic.clone().filter(|cfg| cfg.enabled);
+        let phonetic_patterns = match &phonetic_config {
+            Some(cfg) => Some(load_phonetic_patterns(&cfg.patterns_path)?),
+            None => None,
+        };
+
+        let llm_runtime = if matches!(
+            config.mode,
+            NluMode::Llm | NluMode::Hybrid | NluMode::Phonetic
+        ) {
             if let Some(llm_config) = config.llm.clone() {
                 let connector_config = llm_config.to_connector_config()?;
                 let connector = Arc::new(LlmConnector::new(connector_config).await?);
@@ -280,6 +362,8 @@ impl NluEngine {
             wake_words_lower,
             local_matcher,
             llm_runtime,
+            phonetic_config,
+            phonetic_patterns,
             fallback,
         })
     }
@@ -336,6 +420,15 @@ impl NluEngine {
                     offset,
                 )
                 .await
+            }
+            NluMode::Phonetic => {
+                self.process_phonetic(
+                    transcript,
+                    wake_word_detected,
+                    normalized_command_trimmed,
+                    original_command_trimmed,
+                )
+                    .await
             }
         }
     }
@@ -493,6 +586,195 @@ impl NluEngine {
         }
 
         Ok(self.fallback_result(transcript, wake_word_detected, original_command, "no_match"))
+    }
+
+    async fn process_phonetic(
+        &self,
+        transcript: &Transcript,
+        wake_word_detected: bool,
+        normalized_command: &str,
+        original_command: &str,
+    ) -> KlarnetResult<NluResult> {
+        if !wake_word_detected {
+            return Ok(self.fallback_result(
+                transcript,
+                false,
+                normalized_command,
+                "wake_word_missing",
+            ));
+        }
+
+        if normalized_command.is_empty() {
+            return Ok(self.fallback_result(transcript, true, normalized_command, "empty_command"));
+        }
+
+        let cfg = match &self.phonetic_config {
+            Some(cfg) => cfg,
+            None => {
+                return self
+                    .process_local(
+                        transcript,
+                        wake_word_detected,
+                        normalized_command,
+                        original_command,
+                        0,
+                    )
+                    .await;
+            }
+        };
+
+        let patterns = match &self.phonetic_patterns {
+            Some(patterns) => patterns,
+            None => {
+                return Ok(self.fallback_result(
+                    transcript,
+                    wake_word_detected,
+                    original_command,
+                    "phonetic_not_configured",
+                ));
+            }
+        };
+
+        if cfg.auto_llm_on_question && contains_question_word(normalized_command) {
+            if self.llm_runtime.is_some() {
+                return self
+                    .process_llm(
+                        transcript,
+                        wake_word_detected,
+                        normalized_command,
+                        original_command,
+                    )
+                    .await;
+            }
+        }
+
+        if cfg.auto_llm_on_long && normalized_command.split_whitespace().count() > 10 {
+            if self.llm_runtime.is_some() {
+                return self
+                    .process_llm(
+                        transcript,
+                        wake_word_detected,
+                        normalized_command,
+                        original_command,
+                    )
+                    .await;
+            }
+        }
+
+        let match_result = patterns
+            .matcher
+            .match_text_within(normalized_command, cfg.max_distance);
+
+        if let Some(phonetic_match) = match_result {
+            if let Some(meta) = patterns.metadata.get(&phonetic_match.command.text) {
+                return self
+                    .process_phonetic_match(
+                        transcript,
+                        wake_word_detected,
+                        normalized_command,
+                        original_command,
+                        cfg,
+                        meta,
+                        phonetic_match,
+                    )
+                    .await;
+            }
+        }
+
+        if cfg.auto_llm_on_no_match && self.llm_runtime.is_some() {
+            return self
+                .process_llm(
+                    transcript,
+                    wake_word_detected,
+                    normalized_command,
+                    original_command,
+                )
+                .await;
+        }
+
+        Ok(self.fallback_result(
+            transcript,
+            wake_word_detected,
+            original_command,
+            "phonetic_no_match",
+        ))
+    }
+
+    async fn process_phonetic_match(
+        &self,
+        transcript: &Transcript,
+        wake_word_detected: bool,
+        normalized_command: &str,
+        original_command: &str,
+        cfg: &PhoneticNluConfig,
+        meta: &PhoneticIntentMetadata,
+        phonetic_match: PhoneticMatch,
+    ) -> KlarnetResult<NluResult> {
+        let confidence_penalty = phonetic_match.distance as f32 * 0.1;
+        let confidence = (meta.base_confidence - confidence_penalty).max(0.0);
+        let requires_llm = meta.requires_llm
+            || (cfg.auto_llm_on_low_confidence && confidence < cfg.min_confidence);
+
+        if requires_llm {
+            if self.llm_runtime.is_some() {
+                return self
+                    .process_llm(
+                        transcript,
+                        wake_word_detected,
+                        normalized_command,
+                        original_command,
+                    )
+                    .await;
+            }
+
+            return Ok(self.fallback_result(
+                transcript,
+                wake_word_detected,
+                original_command,
+                "phonetic_requires_llm",
+            ));
+        }
+
+        let mut parameters = meta.parameters.clone();
+        parameters.insert(
+            "transcript".to_string(),
+            Value::String(transcript.full_text.clone()),
+        );
+        parameters.insert(
+            "matched_pattern".to_string(),
+            Value::String(phonetic_match.command.text.clone()),
+        );
+        parameters.insert(
+            "phonetic_code".to_string(),
+            Value::String(phonetic_match.command.code.clone()),
+        );
+        parameters.insert(
+            "phonetic_distance".to_string(),
+            Value::Number(Number::from(phonetic_match.distance as u64)),
+        );
+
+        let command_type = CommandType::Local(LocalCommand {
+            action: meta.action.clone(),
+            parameters: parameters.clone(),
+        });
+
+        Ok(NluResult {
+            transcript: transcript.full_text.clone(),
+            intent: Some(Intent {
+                name: meta.name.clone(),
+                confidence,
+                entities: Vec::new(),
+            }),
+            wake_word_detected,
+            command_type,
+            confidence,
+            parameters,
+            routing: CommandRouting {
+                route: CommandRoute::Local,
+                target: Some(meta.action.clone()),
+                reason: Some("phonetic_match".to_string()),
+            },
+        })
     }
 
     fn build_local_result(
@@ -711,11 +993,13 @@ impl NluEngine {
             .as_ref()
             .expect("LLM configuration missing for enabled mode");
 
-        let system_prompt = format!(
-            "You are KLARNET's NLU module. Extract intents, actions, routes and structured parameters. \
-            Use function calls when appropriate. Known wake words: {}. Return Russian text when needed.",
-            self.config.wake_words.join(", ")
-        );
+        let system_prompt = llm_config.system_prompt.clone().unwrap_or_else(|| {
+            format!(
+                "You are KLARNET's NLU module. Extract intents, actions, routes and structured parameters. \
+                Use function calls when appropriate. Known wake words: {}. Return Russian text when needed.",
+                self.config.wake_words.join(", ")
+            )
+        });
 
         let context = format!(
             "Original transcript: {original}\nNormalised: {normalized}\nLanguage: {language}",

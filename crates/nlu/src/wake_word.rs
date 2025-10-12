@@ -1,6 +1,7 @@
 // crates/nlu/src/wake_word.rs
 
 /// Нечёткое сравнение wake words с поддержкой опечаток
+#[allow(dead_code)]
 pub fn fuzzy_wake_word_match(text: &str, wake_words: &[String]) -> Option<(String, usize)> {
     let text_lower = text.to_lowercase();
 
@@ -35,17 +36,24 @@ pub fn fuzzy_wake_word_match(text: &str, wake_words: &[String]) -> Option<(Strin
 }
 
 /// Фонетические варианты для русских слов
+#[allow(dead_code)]
 fn get_phonetic_variants(word: &str) -> Vec<String> {
     let mut variants = vec![];
 
     // Общие замены букв в русском языке при распознавании
     let replacements = vec![
-        ("к", "г"), ("г", "к"),     // Кларнет -> Гларнет
-        ("т", "д"), ("д", "т"),     // Кларнет -> Кларнед
-        ("е", "и"), ("и", "е"),     // Кларнет -> Кларнит
-        ("о", "а"), ("а", "о"),
-        ("ё", "е"), ("е", "ё"),
-        ("й", "и"), ("и", "й"),
+        ("к", "г"),
+        ("г", "к"), // Кларнет -> Гларнет
+        ("т", "д"),
+        ("д", "т"), // Кларнет -> Кларнед
+        ("е", "и"),
+        ("и", "е"), // Кларнет -> Кларнит
+        ("о", "а"),
+        ("а", "о"),
+        ("ё", "е"),
+        ("е", "ё"),
+        ("й", "и"),
+        ("и", "й"),
     ];
 
     for (from, to) in replacements {
@@ -58,26 +66,39 @@ fn get_phonetic_variants(word: &str) -> Vec<String> {
 }
 
 /// Вычисление расстояния Левенштейна
+#[allow(dead_code)]
 fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
     let a_len = a_chars.len();
     let b_len = b_chars.len();
 
-    if a_len == 0 { return b_len; }
-    if b_len == 0 { return a_len; }
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
 
     let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
 
-    for i in 0..=a_len { matrix[i][0] = i; }
-    for j in 0..=b_len { matrix[0][j] = j; }
+    for i in 0..=a_len {
+        matrix[i][0] = i;
+    }
+    for j in 0..=b_len {
+        matrix[0][j] = j;
+    }
 
     for i in 1..=a_len {
         for j in 1..=b_len {
-            let cost = if a_chars[i-1] == b_chars[j-1] { 0 } else { 1 };
-            matrix[i][j] = (matrix[i-1][j] + 1)
-                .min(matrix[i][j-1] + 1)
-                .min(matrix[i-1][j-1] + cost);
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            matrix[i][j] = (matrix[i - 1][j] + 1)
+                .min(matrix[i][j - 1] + 1)
+                .min(matrix[i - 1][j - 1] + cost);
         }
     }
 

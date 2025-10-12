@@ -28,6 +28,25 @@ impl ConfigValidator {
             ));
         }
 
+        if config.wake_word.enabled {
+            if config.wake_word.keyword.trim().is_empty() {
+                return Err(KlarnetError::Config(
+                    "Wake word keyword cannot be empty when enabled".to_string(),
+                ));
+            }
+            if !(0.0..=1.0).contains(&config.wake_word.sensitivity) {
+                return Err(KlarnetError::Config(
+                    "Wake word sensitivity must be between 0.0 and 1.0".to_string(),
+                ));
+            }
+        }
+
+        if config.acknowledgment.enabled && config.acknowledgment.selector.phrases.is_empty() {
+            return Err(KlarnetError::Config(
+                "At least one acknowledgment phrase must be configured".to_string(),
+            ));
+        }
+
         if let Err(err) = config.stt.validate() {
             warn!("Whisper configuration validation warning: {err}");
         }

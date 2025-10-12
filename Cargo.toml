@@ -11,7 +11,8 @@ members = [
     "crates/config",
     "crates/api",
     "crates/buffering",
-
+    "crates/ack_selector",
+    "crates/phonetic",
 ]
 resolver = "2"
 
