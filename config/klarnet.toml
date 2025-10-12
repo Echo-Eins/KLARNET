@@ -10,7 +10,7 @@ log_level = "info"
 sample_rate = 16000
 channels = 1
 bits_per_sample = 16
-buffer_size = 1024
+buffer_size = 2048
 input_device = "Набор микрофонов (Технология Intel® Smart Sound для цифровых микрофонов)"
 output_device = "Колонки (Realtek(R) Audio)"
 
@@ -44,7 +44,7 @@ script = "scripts/whisper_server.py"
 
 [nlu]
 mode = "Hybrid"
-wake_words = ["Кларнет", "ассистент", "компьютер"]
+wake_words = ["Кларнет", "Ларнет", "Гларнет", "Кларнед", "ассистент", "компьютер", "Ассистент", "Компьютер"]
 confidence_threshold = 0.7
 
 [nlu.local]

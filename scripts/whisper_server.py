@@ -112,6 +112,11 @@ def main() -> None:
                 beam_size=5,
                 word_timestamps=True,
                 vad_filter=True,
+                vad_parameters=dict(
+                    min_silence_duration_ms=300,   # ← Добавить!
+                    threshold=0.3,                  # ← Более мягкий порог
+                    min_speech_duration_ms=100      # ← Короткие фразы тоже ловим
+                )
             )
         except Exception as exc:  # pylint: disable=broad-except
             LOGGER.exception("Error during transcription: %s", exc)

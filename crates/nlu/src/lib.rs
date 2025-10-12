@@ -1,6 +1,9 @@
 mod llm;
 mod patterns;
 
+mod wake_word;
+use wake_word::fuzzy_wake_word_match;
+
 use std::{
     path::PathBuf,
     sync::Arc,
