@@ -24,7 +24,7 @@ use whisper_stt::{WhisperConfig, WhisperEngine};
 const MAX_SEGMENT_DURATION_MS: u64 = 12_000;
 const INITIAL_BACKOFF_MS: u64 = 200;
 const MAX_BACKOFF_MS: u64 = 5_000;
-
+const IGNORED_TRANSCRIPTS: &[&str] = &["КРЯХТЕНИЕ"];
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimulationConfig {
     #[serde(default)]
@@ -583,6 +583,15 @@ async fn process_audio_chunk(
             if stt_tx.send(transcript.clone()).is_err() {
                 warn!("STT consumer dropped transcript channel");
             }
+
+            if should_ignore_transcript(&transcript) {
+                info!(
+                    text = %transcript.full_text,
+                    "Transcript ignored by filters; skipping NLU dispatch"
+                );
+                return Ok(());
+            }
+
             dispatch_nlu(transcript, metrics, nlu_engine, nlu_tx).await;
             Ok(())
         }
@@ -648,6 +657,36 @@ async fn dispatch_nlu(
             error!("NLU processing failed: {err}");
         }
     }
+}
+
+fn should_ignore_transcript(transcript: &Transcript) -> bool {
+    is_transcript_ignorable(&transcript.full_text)
+}
+
+fn normalize_transcript_text(full_text: &str) -> String {
+    let trimmed = full_text.trim();
+    let punctuation_trimmed = trimmed.trim_matches(|c: char| c.is_ascii_punctuation());
+    punctuation_trimmed.trim().to_string()
+}
+
+fn matches_ignored_phrase(normalized: &str) -> bool {
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let uppercased = normalized.to_uppercase();
+    IGNORED_TRANSCRIPTS
+        .iter()
+        .any(|phrase| uppercased == *phrase)
+}
+
+pub fn is_transcript_ignorable(full_text: &str) -> bool {
+    let normalized = normalize_transcript_text(full_text);
+    if normalized.is_empty() {
+        return true;
+    }
+
+    matches_ignored_phrase(&normalized)
 }
 
 async fn run_simulated_pipeline(

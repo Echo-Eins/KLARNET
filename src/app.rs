@@ -22,7 +22,7 @@ use tokio::time::{sleep, timeout};
 use tracing::{error, info, warn};
 use whisper_stt::WhisperEngine;
 
-use crate::pipeline::{AudioPipeline, PipelineConfig};
+use crate::pipeline::{self, AudioPipeline, PipelineConfig};
 
 pub struct AppConfig {
     pub runtime: KlarnetConfig,
@@ -262,8 +262,19 @@ impl KlarnetApp {
             let history = self.conversation_history.clone();
             let handle = tokio::spawn(async move {
                 while let Some(transcript) = stt_rx.recv().await {
-                    if transcript.full_text.is_empty() {
+                    let trimmed = transcript.full_text.trim();
+                    if trimmed.is_empty() {
                         info!(assistant = %assistant, "Received empty transcript");
+                        continue;
+                    }
+
+                    if pipeline::is_transcript_ignorable(&transcript.full_text) {
+                        info!(
+                            assistant = %assistant,
+                            text = %transcript.full_text,
+                            "Transcript ignored by filters"
+                        );
+                        continue;
                     } else {
                         info!(assistant = %assistant, text = %transcript.full_text, "Speech recognised");
                         history.record_user(&transcript.full_text).await;
