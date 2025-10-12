@@ -139,7 +139,7 @@ def main() -> None:
                 language=args.language,
                 beam_size=5,
                 word_timestamps=True,
-                vad_filter=False,
+                vad_filter=True,  # Включить VAD фильтрацию
             )
             segments = list(segments_iter)
         except Exception as exc:  # pylint: disable=broad-except
