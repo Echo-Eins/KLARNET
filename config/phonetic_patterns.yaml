@@ -1,0 +1,71 @@
+# config/phonetic_patterns.yaml
+# Автоматически кодируется в phonetic codes при загрузке
+
+intents:
+  # ════════════════════════════════════
+  # ОСВЕЩЕНИЕ
+  # ════════════════════════════════════
+  - name: lights_on
+    patterns:
+      - "включи свет"
+      - "зажги свет"
+      - "включи освещение"
+      - "свет включи"
+    intent: "smart_home.lights"
+    params:
+      state: "on"
+    confidence: 0.95
+
+  - name: lights_off
+    patterns:
+      - "выключи свет"
+      - "погаси свет"
+      - "выключи освещение"
+      - "свет выключи"
+    intent: "smart_home.lights"
+    params:
+      state: "off"
+    confidence: 0.95
+
+  # ════════════════════════════════════
+  # ГРОМКОСТЬ
+  # ════════════════════════════════════
+  - name: volume_up
+    patterns:
+      - "громче"
+      - "прибавь громкость"
+      - "сделай громче"
+    intent: "system.volume"
+    params:
+      action: "increase"
+    confidence: 0.9
+
+  - name: volume_down
+    patterns:
+      - "тише"
+      - "убавь громкость"
+      - "сделай тише"
+    intent: "system.volume"
+    params:
+      action: "decrease"
+    confidence: 0.9
+
+  # ════════════════════════════════════
+  # ПОГОДА (→ LLM)
+  # ════════════════════════════════════
+  - name: weather
+    patterns:
+      - "какая погода"
+      - "погода"
+    requires_llm: true
+    intent: "assistant.weather"
+
+  # ════════════════════════════════════
+  # ТАЙМЕР
+  # ════════════════════════════════════
+  - name: set_timer
+    patterns:
+      - "таймер на"
+      - "поставь таймер"
+    requires_llm: true
+    intent: "assistant.timer"
