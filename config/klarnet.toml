@@ -77,7 +77,7 @@ type = "python"
 script = "scripts/whisper_server.py"
 
 [nlu]
-mode = "Hybrid"
+mode = "Phonetic"
 wake_words = ["Кларнет", "Ларнет", "Гларнет", "Кларнед", "ассистент", "компьютер", "Ассистент", "Компьютер"]
 confidence_threshold = 0.7
 

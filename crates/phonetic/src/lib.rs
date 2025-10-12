@@ -1,6 +1,39 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+const COMMON_REPLACEMENTS: &[(&str, &str)] = &[
+    // Latin transliterations that Whisper may emit
+    ("shch", "щ"),
+    ("sch", "щ"),
+    ("sh", "ш"),
+    ("ch", "ч"),
+    ("yo", "ё"),
+    ("ye", "е"),
+    ("ya", "я"),
+    ("yu", "ю"),
+    ("ja", "я"),
+    ("ju", "ю"),
+    ("je", "е"),
+    ("jo", "ё"),
+    ("ph", "ф"),
+    ("ts", "ц"),
+    ("kh", "х"),
+    ("qu", "к"),
+    ("ck", "к"),
+    // Cyrillic assimilations and frequent recognition glitches
+    ("дж", "ж"),
+    ("дз", "з"),
+    ("сч", "щ"),
+    ("зч", "жч"),
+    ("сш", "ш"),
+    ("зж", "ж"),
+    ("стн", "сн"),
+    ("здн", "зн"),
+    ("тс", "ц"),
+    ("ться", "ца"),
+    ("тся", "ца"),
+];
+
 /// Lightweight phonetic encoder for Russian commands.
 #[derive(Debug, Clone)]
 pub struct RussianPhonetic {
@@ -50,15 +83,116 @@ impl RussianPhonetic {
             char_map.insert(c, 'I');
         }
 
+        // Latin characters that Whisper can emit when confident in phonetics
+        for c in ['k', 'g', 'h', 'q', 'x'] {
+            char_map.insert(c, '1');
+        }
+        for c in ['c', 's', 'z'] {
+            char_map.insert(c, '2');
+        }
+        for c in ['t', 'd'] {
+            char_map.insert(c, '3');
+        }
+        for c in ['b', 'p'] {
+            char_map.insert(c, '4');
+        }
+        for c in ['f', 'v', 'w'] {
+            char_map.insert(c, '5');
+        }
+        for c in ['m', 'n'] {
+            char_map.insert(c, '6');
+        }
+        for c in ['l', 'r'] {
+            char_map.insert(c, '7');
+        }
+        char_map.insert('j', '9');
+        char_map.insert('y', '9');
+
+        for c in ['a', 'o', 'u'] {
+            char_map.insert(c, 'A');
+        }
+        for c in ['e', 'i'] {
+            char_map.insert(c, 'I');
+        }
+
+        for digit in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] {
+            char_map.insert(digit, '0');
+        }
+
+
         Self { char_map }
     }
 
     pub fn encode(&self, text: &str) -> String {
-        let normalized = text.to_lowercase();
+        let tokens = self.split_tokens(text);
+        let mut encoded = Vec::new();
+
+        for token in tokens {
+            if let Some(normalized) = self.preprocess_token(&token) {
+                let code = self.encode_preprocessed(&normalized);
+                if !code.is_empty() {
+                    encoded.push(code);
+                }
+            }
+        }
+
+        encoded.join("-")
+    }
+
+    fn split_tokens(&self, text: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+
+        for ch in text.chars() {
+            if ch.is_alphanumeric() || (ch as u32) >= 0x0400 && (ch as u32) <= 0x04FF {
+                for lower in ch.to_lowercase() {
+                    current.push(lower);
+                }
+            } else if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        }
+
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+
+        tokens
+    }
+
+    fn preprocess_token(&self, token: &str) -> Option<String> {
+        let mut normalized = String::with_capacity(token.len());
+
+        for ch in token.chars() {
+            match ch {
+                'ь' | 'ъ' => continue,
+                'ё' => normalized.push('е'),
+                other if other.is_alphabetic() || other.is_ascii_digit() => {
+                    normalized.push(other);
+                }
+                _ => {}
+            }
+        }
+
+        if normalized.is_empty() {
+            return None;
+        }
+
+        let mut replaced = normalized;
+        for (pattern, replacement) in COMMON_REPLACEMENTS {
+            if replaced.contains(pattern) {
+                replaced = replaced.replace(pattern, replacement);
+            }
+        }
+
+        Some(replaced)
+    }
+
+    fn encode_preprocessed(&self, token: &str) -> String {
         let mut code = String::new();
         let mut last_code = '\0';
 
-        for ch in normalized.chars() {
+        for ch in token.chars() {
             if let Some(&phoneme) = self.char_map.get(&ch) {
                 if phoneme != last_code {
                     code.push(phoneme);
@@ -72,7 +206,14 @@ impl RussianPhonetic {
             }
         }
 
-        code.trim_end_matches('-').to_string()
+        code
+    }
+
+    pub fn encode_token(&self, token: &str) -> String {
+        match self.preprocess_token(token) {
+            Some(preprocessed) => self.encode_preprocessed(&preprocessed),
+            None => String::new(),
+        }
     }
 
     pub fn distance(&self, code1: &str, code2: &str) -> usize {
@@ -115,6 +256,77 @@ impl RussianPhonetic {
     }
 }
 
+/// Dictionary that keeps phonetic encodings for seen tokens.
+#[derive(Debug, Clone)]
+pub struct PhoneticDictionary {
+    encoder: RussianPhonetic,
+    words: HashMap<String, String>,
+}
+
+impl Default for PhoneticDictionary {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PhoneticDictionary {
+    pub fn new() -> Self {
+        Self {
+            encoder: RussianPhonetic::new(),
+            words: HashMap::new(),
+        }
+    }
+
+    pub fn register_text(&mut self, text: &str) -> String {
+        let mut codes = Vec::new();
+
+        for token in self.encoder.split_tokens(text) {
+            if let Some(normalized) = self.encoder.preprocess_token(&token) {
+                let code = self
+                    .words
+                    .entry(normalized.clone())
+                    .or_insert_with(|| self.encoder.encode_preprocessed(&normalized))
+                    .clone();
+
+                if !code.is_empty() {
+                    codes.push(code);
+                }
+            }
+        }
+
+        codes.join("-")
+    }
+
+    pub fn encode(&self, text: &str) -> String {
+        let mut codes = Vec::new();
+
+        for token in self.encoder.split_tokens(text) {
+            if let Some(normalized) = self.encoder.preprocess_token(&token) {
+                if let Some(code) = self.words.get(&normalized) {
+                    if !code.is_empty() {
+                        codes.push(code.clone());
+                    }
+                } else {
+                    let generated = self.encoder.encode_preprocessed(&normalized);
+                    if !generated.is_empty() {
+                        codes.push(generated);
+                    }
+                }
+            }
+        }
+
+        codes.join("-")
+    }
+
+    pub fn distance(&self, left: &str, right: &str) -> usize {
+        self.encoder.distance(left, right)
+    }
+
+    pub fn encoder(&self) -> &RussianPhonetic {
+        &self.encoder
+    }
+}
+
 /// Phonetic command entry stored in the matcher.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhoneticCommand {
@@ -133,7 +345,7 @@ pub struct PhoneticMatch {
 }
 
 pub struct PhoneticMatcher {
-    phonetic: RussianPhonetic,
+    dictionary: PhoneticDictionary,
     commands: Vec<PhoneticCommand>,
 }
 
@@ -146,13 +358,13 @@ impl Default for PhoneticMatcher {
 impl PhoneticMatcher {
     pub fn new() -> Self {
         Self {
-            phonetic: RussianPhonetic::new(),
+            dictionary: PhoneticDictionary::new(),
             commands: Vec::new(),
         }
     }
 
     pub fn add_command(&mut self, text: &str, intent: &str, confidence: f32) {
-        let code = self.phonetic.encode(text);
+        let code = self.dictionary.register_text(text);
         self.commands.push(PhoneticCommand {
             text: text.to_string(),
             code,
@@ -176,11 +388,11 @@ impl PhoneticMatcher {
             return None;
         }
 
-        let input_code = self.phonetic.encode(text);
+        let input_code = self.dictionary.encode(text);
         let mut best: Option<(usize, &PhoneticCommand)> = None;
 
         for command in &self.commands {
-            let distance = self.phonetic.distance(&input_code, &command.code);
+            let distance = self.dictionary.distance(&input_code, &command.code);
             if distance > max_distance {
                 continue;
             }
@@ -189,7 +401,7 @@ impl PhoneticMatcher {
                 Some((best_distance, best_command)) => {
                     if distance < *best_distance
                         || (distance == *best_distance
-                        && command.confidence > best_command.confidence)
+                            && command.confidence > best_command.confidence)
                     {
                         *best_distance = distance;
                         *best_command = command;
@@ -237,6 +449,15 @@ mod tests {
 
         let result = matcher.match_text_within("фключи сфет", 2).expect("match");
         assert_eq!(result.command.intent, "lights_on");
+    }
+
+    #[test]
+    fn dictionary_reuses_known_tokens() {
+        let mut dictionary = PhoneticDictionary::new();
+        let expected = dictionary.register_text("включи свет");
+
+        assert_eq!(expected, dictionary.encode("включи свет"));
+        assert_eq!(expected, dictionary.encode("фключи сфет"));
     }
 
     #[test]
