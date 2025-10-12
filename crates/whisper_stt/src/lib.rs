@@ -171,6 +171,19 @@ impl WhisperEngine {
             .collect::<Vec<_>>()
             .join(" ");
 
+        let no_speech_prob = response.no_speech_prob.unwrap_or(0.0);
+        if full_text.is_empty() || no_speech_prob >= self.config.no_speech_prob_threshold {
+            return Transcript {
+                id: chunk.id,
+                language: response
+                    .language
+                    .unwrap_or_else(|| self.config.language.clone()),
+                segments: Vec::new(),
+                full_text: String::new(),
+                processing_time: elapsed,
+            };
+        }
+
         Transcript {
             id: chunk.id,
             language: response
@@ -585,14 +598,28 @@ impl Drop for PythonWhisperProcess {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WhisperResponse {
     #[serde(default)]
     language: Option<String>,
     #[serde(default)]
+    language_probability: Option<f32>,
+    #[serde(default)]
+    avg_logprob: Option<f32>,
+    #[serde(default)]
+    compression_ratio: Option<f32>,
+    #[serde(default)]
+    no_speech_prob: Option<f32>,
+    #[serde(default)]
+    duration: Option<f32>,
+    #[serde(default)]
+    temperature: Option<f32>,
+    #[serde(default)]
     segments: Vec<WhisperSegment>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WhisperSegment {
     start: f64,
@@ -600,6 +627,12 @@ struct WhisperSegment {
     text: String,
     #[serde(default)]
     confidence: Option<f32>,
+    #[serde(default)]
+    avg_logprob: Option<f32>,
+    #[serde(default)]
+    compression_ratio: Option<f32>,
+    #[serde(default)]
+    no_speech_prob: Option<f32>,
     #[serde(default)]
     words: Vec<WhisperWord>,
 }
@@ -846,6 +879,9 @@ while True:
                 end: 0.5,
                 text: text.to_string(),
                 confidence: Some(0.9),
+                avg_logprob: None,
+                compression_ratio: None,
+                no_speech_prob: None,
                 words: vec![word],
             };
 
@@ -853,6 +889,12 @@ while True:
                 delay: None,
                 result: Ok(WhisperResponse {
                     language: Some("ru".to_string()),
+                    language_probability: None,
+                    avg_logprob: None,
+                    compression_ratio: None,
+                    no_speech_prob: None,
+                    duration: None,
+                    temperature: None,
                     segments: vec![segment],
                 }),
             }])
@@ -863,11 +905,20 @@ while True:
                 delay: Some(Duration::from_millis(100)),
                 result: Ok(WhisperResponse {
                     language: Some("ru".to_string()),
+                    language_probability: None,
+                    avg_logprob: None,
+                    compression_ratio: None,
+                    no_speech_prob: None,
+                    duration: None,
+                    temperature: None,
                     segments: vec![WhisperSegment {
                         start: 0.0,
                         end: 1.0,
                         text: "ignored".to_string(),
                         confidence: Some(0.5),
+                        avg_logprob: None,
+                        compression_ratio: None,
+                        no_speech_prob: None,
                         words: vec![],
                     }],
                 }),
@@ -877,11 +928,20 @@ while True:
                 delay: None,
                 result: Ok(WhisperResponse {
                     language: Some("ru".to_string()),
+                    language_probability: None,
+                    avg_logprob: None,
+                    compression_ratio: None,
+                    no_speech_prob: None,
+                    duration: None,
+                    temperature: None,
                     segments: vec![WhisperSegment {
                         start: 0.0,
                         end: 0.5,
                         text: "hello".to_string(),
                         confidence: Some(0.9),
+                        avg_logprob: None,
+                        compression_ratio: None,
+                        no_speech_prob: None,
                         words: vec![WhisperWord {
                             word: "hello".to_string(),
                             start: 0.0,
@@ -896,6 +956,7 @@ while True:
             Self::new(vec![delayed, success])
         }
 
+        #[allow(dead_code)]
         fn restarts(&self) -> usize {
             self.restarts.load(Ordering::SeqCst)
         }

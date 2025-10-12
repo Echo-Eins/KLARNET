@@ -39,8 +39,24 @@ def read_exact(stream: Any, size: int) -> bytes:
     return bytes(data)
 
 
-def build_response(segments) -> Dict[str, Any]:
+def build_response(segments, info) -> Dict[str, Any]:
     response: Dict[str, Any] = {"segments": []}
+
+    if hasattr(info, "language"):
+        response["language"] = info.language
+    if hasattr(info, "language_probability") and info.language_probability is not None:
+        response["language_probability"] = float(info.language_probability)
+    if hasattr(info, "duration") and info.duration is not None:
+        response["duration"] = float(info.duration)
+    if hasattr(info, "temperature") and info.temperature is not None:
+        response["temperature"] = float(info.temperature)
+    if hasattr(info, "avg_logprob") and info.avg_logprob is not None:
+        response["avg_logprob"] = float(info.avg_logprob)
+    if hasattr(info, "compression_ratio") and info.compression_ratio is not None:
+        response["compression_ratio"] = float(info.compression_ratio)
+    if hasattr(info, "no_speech_prob") and info.no_speech_prob is not None:
+        response["no_speech_prob"] = float(info.no_speech_prob)
+
     for segment in segments:
         segment_payload: Dict[str, Any] = {
             "start": segment.start,
@@ -52,15 +68,27 @@ def build_response(segments) -> Dict[str, Any]:
         if segment.words:
             words: List[Dict[str, Any]] = []
             for word in segment.words:
+                probability = (
+                    float(word.probability)
+                    if word.probability is not None
+                    else None
+                )
                 words.append(
                     {
                         "word": word.word,
                         "start": word.start,
                         "end": word.end,
-                        "probability": word.probability,
+                        "probability": probability,
                     }
                 )
             segment_payload["words"] = words
+
+        if hasattr(segment, "avg_logprob") and segment.avg_logprob is not None:
+            segment_payload["avg_logprob"] = float(segment.avg_logprob)
+        if hasattr(segment, "compression_ratio") and segment.compression_ratio is not None:
+            segment_payload["compression_ratio"] = float(segment.compression_ratio)
+        if hasattr(segment, "no_speech_prob") and segment.no_speech_prob is not None:
+            segment_payload["no_speech_prob"] = float(segment.no_speech_prob)
 
         response["segments"].append(segment_payload)
 
@@ -106,21 +134,21 @@ def main() -> None:
         pcm = np.frombuffer(pcm_bytes, dtype=np.float32)
 
         try:
-            segments, info = model.transcribe(
+            segments_iter, info = model.transcribe(
                 pcm,
                 language=args.language,
                 beam_size=5,
                 word_timestamps=True,
                 vad_filter=False,
             )
+            segments = list(segments_iter)
         except Exception as exc:  # pylint: disable=broad-except
             LOGGER.exception("Error during transcription: %s", exc)
             print(json.dumps({"error": str(exc)}), file=sys.stderr, flush=True)
             continue
 
         # Формируем ответ
-        response = build_response(segments)
-        response["language"] = info.language
+        response = build_response(segments, info)
 
         stdout_buffer.write(json.dumps(response) + "\n")
         stdout_buffer.flush()

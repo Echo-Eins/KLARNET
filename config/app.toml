@@ -22,6 +22,7 @@ min_silence_duration_ms = 500
 language = "ru"
 request_timeout_ms = 30000
 initialization_timeout_ms = 120000
+no_speech_prob_threshold = 0.6
 
 [pipeline.stt.model]
 model_path = "models/whisper-medium"

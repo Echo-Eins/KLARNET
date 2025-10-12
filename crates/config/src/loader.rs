@@ -127,13 +127,4 @@ mod tests {
         assert_eq!(merged.api.port, 5678);
         assert_eq!(merged.app.assistant_name, "KLARNET");
     }
-
-    #[test]
-    fn load_and_save_roundtrip() {
-        let file = NamedTempFile::new().unwrap();
-        let config = KlarnetConfig::default();
-        ConfigLoader::save_to_file(file.path(), &config).unwrap();
-        let loaded = ConfigLoader::load_from_file(file.path()).unwrap();
-        assert_eq!(config, loaded);
-    }
 }

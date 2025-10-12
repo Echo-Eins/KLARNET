@@ -109,6 +109,8 @@ pub struct WhisperConfig {
     pub retry_attempts: usize,
     #[serde(default = "WhisperConfig::default_retry_backoff_ms")]
     pub retry_backoff_ms: u64,
+    #[serde(default = "WhisperConfig::default_no_speech_prob_threshold")]
+    pub no_speech_prob_threshold: f32,
 }
 
 impl WhisperConfig {
@@ -130,6 +132,10 @@ impl WhisperConfig {
 
     fn default_retry_backoff_ms() -> u64 {
         500
+    }
+
+    fn default_no_speech_prob_threshold() -> f32 {
+        0.6
     }
 
     pub fn request_timeout(&self) -> Duration {
@@ -161,6 +167,16 @@ impl WhisperConfig {
             )));
         }
 
+        if !self.no_speech_prob_threshold.is_finite()
+            || self.no_speech_prob_threshold < 0.0
+            || self.no_speech_prob_threshold > 1.0
+        {
+            return Err(KlarnetError::Config(format!(
+                "Invalid Whisper no_speech_prob_threshold: {} (expected value between 0.0 and 1.0)",
+                self.no_speech_prob_threshold
+            )));
+        }
+
         Ok(())
     }
 }
@@ -175,6 +191,7 @@ impl Default for WhisperConfig {
             initialization_timeout_ms: Self::default_initialization_timeout_ms(),
             retry_attempts: Self::default_retry_attempts(),
             retry_backoff_ms: Self::default_retry_backoff_ms(),
+            no_speech_prob_threshold: Self::default_no_speech_prob_threshold(),
         }
     }
 }
