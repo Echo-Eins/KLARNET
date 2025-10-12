@@ -10,7 +10,18 @@ log_level = "info"
 sample_rate = 16000
 channels = 1
 bits_per_sample = 16
-buffer_size = 2048
+# Начинаем консервативно
+buffer_size = 2048  # 128ms
+
+# Если в логах видите overflow - увеличьте до:
+# buffer_size = 4096  # 256ms
+
+# Если overflow даже с 4096 - ТОЧНО проблема не в буфере!
+# Смотрите на:
+# - Драйверы микрофона
+# - Фоновые процессы
+# - Антивирус блокирует доступ?
+
 input_device = "Набор микрофонов (Технология Intel® Smart Sound для цифровых микрофонов)"
 output_device = "Колонки (Realtek(R) Audio)"
 

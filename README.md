@@ -405,6 +405,26 @@ graph TD
     P --> Q[Grafana]
 ```
 
+📊 МЕТРИКИ ПРОИЗВОДИТЕЛЬНОСТИ
+Полный цикл (простая команда):
+├── Porcupine detection: 30ms
+├── TTS acknowledgment: 200ms
+├── User speaks: 2000ms
+├── Whisper STT: 300ms
+├── Phonetic match: 2ms
+├── Execute action: 50ms
+└── TOTAL: ~2.6 seconds
+
+Полный цикл (LLM запрос):
+├── Porcupine detection: 30ms
+├── TTS acknowledgment: 200ms
+├── User speaks: 3000ms
+├── Whisper STT: 400ms
+├── needs_llm detection: 1ms
+├── LLM request: 800ms
+├── Execute action: 100ms
+└── TOTAL: ~4.5 seconds
+
 ### Модульная структура
 
 | Модуль | Описание | Размер |
