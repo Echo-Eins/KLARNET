@@ -82,13 +82,13 @@ rand.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 klarnet-core = { path = "crates/core" }
-audio_ingest = { path = "crates/audio_ingest", default-features = false }
+audio_ingest = { path = "crates/audio_ingest" }  # Убрать default-features = false
+tts = { path = "crates/tts", features = ["hardware"] }  # ← Добавить features!
 vad = { path = "crates/vad" }
 whisper_stt = { path = "crates/whisper_stt" }
 nlu = { path = "crates/nlu" }
 actions = { path = "crates/actions" }
 llm-connector = { path = "crates/llm_connector" }
-tts = { path = "crates/tts" }
 klarnet-config = { path = "crates/config" }
 klarnet-api = { path = "crates/api" }
 klarnet-buffering = { path = "crates/buffering" }

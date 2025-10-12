@@ -928,6 +928,27 @@ impl NluEngine {
         let trimmed_original = text.trim_start();
         let trimmed_lower = trimmed_original.to_lowercase();
 
+        // ✅ ИСПОЛЬЗУЕМ fuzzy_wake_word_match вместо starts_with!
+        use crate::wake_word::fuzzy_wake_word_match;
+
+        if let Some((matched_wake, _distance)) = fuzzy_wake_word_match(&trimmed_lower, &self.wake_words_lower) {
+            let wake_lower = matched_wake.to_lowercase();
+            let wake_chars = wake_lower.chars().count();
+
+            // Найти позицию wake word в оригинальном тексте
+            if let Some(pos) = trimmed_lower.find(&wake_lower) {
+                let wake_bytes = char_offset(trimmed_original, wake_chars);
+                let remainder = &trimmed_original[wake_bytes..];
+                let remainder = remainder.trim_start_matches(|c: char| {
+                    c.is_whitespace() || matches!(c, ',' | ':' | ';' | '-' | '–')
+                });
+                let offset = text.len().saturating_sub(remainder.len());
+                let normalized = remainder.to_lowercase();
+                return (true, normalized, remainder.to_string(), offset);
+            }
+        }
+
+        // Старый код для точного совпадения (fallback)
         for wake in &self.wake_words_lower {
             if trimmed_lower.starts_with(wake) {
                 let wake_chars = wake.chars().count();
